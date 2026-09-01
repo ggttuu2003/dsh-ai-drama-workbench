@@ -197,7 +197,7 @@ async function getSshStatus(config = undefined) {
 function runRemoteBridgeStart(config, environment) {
   return new Promise((resolve, reject) => {
     const destination = `${config.user}@${config.host}`
-    const args = ['-T', '-o', 'ConnectTimeout=15', '-o', 'BatchMode=no', '-o', 'PubkeyAuthentication=no', '-o', 'PasswordAuthentication=yes', '-o', 'PreferredAuthentications=password', '-o', 'ControlPath=none', '-o', 'IdentityAgent=none', '-p', String(config.port), destination, 'cd /root/comfy-bridge && nohup ./run.sh > bridge.log 2>&1 </dev/null &']
+    const args = ['-T', '-o', 'ConnectTimeout=15', '-o', 'BatchMode=no', '-o', 'PubkeyAuthentication=no', '-o', 'PasswordAuthentication=yes', '-o', 'PreferredAuthentications=password', '-o', 'ControlPath=none', '-o', 'IdentityAgent=none', '-p', String(config.port), destination, "sh -c 'cd /root/comfy-bridge && nohup ./run.sh >> bridge.log 2>&1 </dev/null &' "]
     const child = spawn('ssh', args, { env: environment, stdio: ['ignore', 'ignore', 'pipe'] })
     let detail = ''
     const timer = setTimeout(() => { child.kill('SIGTERM'); reject(new WorkbenchError('远程启动 Comfy Bridge 超时。')) }, 20_000)
@@ -264,10 +264,17 @@ async function startSshTunnel(rawConfig) {
       if (sshProcess === child) sshProcess = null
     })
     // The tunnel alone is not enough: recover the fixed bridge service when it is down.
-    await new Promise(resolve => setTimeout(resolve, 350))
-    const status = await getSshStatus(saved)
+    await new Promise(resolve => setTimeout(resolve, 500))
+    let status = await getSshStatus(saved)
     if (status.state === 'error' && status.label === 'Bridge 异常') {
       await runRemoteBridgeStart(saved, environment)
+      // run.sh starts Python asynchronously; give the service a short window
+      // to bind 8787 before reporting the final connection state.
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 500))
+        status = await getSshStatus(saved)
+        if (status.state === 'connected') break
+      }
     }
   } catch (error) {
     transientPassword = ''
