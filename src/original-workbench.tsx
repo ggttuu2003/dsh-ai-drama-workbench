@@ -560,6 +560,33 @@ function SceneAssetCard({
   );
 }
 
+type WorkflowNode = {
+  label: string;
+  state: "done" | "current" | "pending";
+};
+
+function StoryboardWorkflow({
+  nodes,
+  onSelect,
+}: {
+  nodes: WorkflowNode[];
+  onSelect: (index: number) => void;
+}) {
+  return (
+    <nav aria-label="分镜制作流程" className="storyboard-workflow">
+      {nodes.map((node, index) => (
+        <React.Fragment key={node.label}>
+          <button className={`storyboard-workflow-node is-${node.state}`} onClick={() => onSelect(index)} type="button">
+            <span className="storyboard-workflow-index">{node.state === "done" ? "✓" : String(index + 1).padStart(2, "0")}</span>
+            <span>{node.label}</span>
+          </button>
+          {index < nodes.length - 1 ? <span aria-hidden="true" className={`storyboard-workflow-line ${node.state === "done" ? "is-done" : ""}`} /> : null}
+        </React.Fragment>
+      ))}
+    </nav>
+  );
+}
+
 function SlotPanel({
   slot,
   disabled,
@@ -1926,6 +1953,21 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     })).filter((group) => group.shots.length > 0),
     [activeScene?.sceneId, draftGroups],
   );
+  const storyboardWorkflow = useMemo<WorkflowNode[]>(() => {
+    const hasScript = shotAssets.length > 0 || draftGroups.length > 0;
+    const hasScene = Boolean(activeScene);
+    const hasSceneSetup = Boolean(activeScene?.scene?.isComplete);
+    const hasShots = activeShotAssets.some((shot) => !shot.isDraft);
+    const hasGenerated = activeShotAssets.some((shot) => shot.slots.some((slot) => slot.files.some((file) => file.name.includes("已选") || file.kind === "video")));
+    const firstPending = [hasScript, hasScene, hasSceneSetup, hasShots, hasGenerated].findIndex((value) => !value);
+    return [
+      { label: "剧本", state: hasScript ? "done" : firstPending === 0 ? "current" : "pending" },
+      { label: "场次", state: hasScene ? "done" : firstPending === 1 ? "current" : "pending" },
+      { label: "资产", state: hasSceneSetup ? "done" : firstPending === 2 ? "current" : "pending" },
+      { label: "镜头", state: hasShots ? "done" : firstPending === 3 ? "current" : "pending" },
+      { label: "生成", state: hasGenerated ? "done" : firstPending === 4 ? "current" : "pending" },
+    ];
+  }, [activeScene, activeShotAssets, draftGroups.length, shotAssets.length]);
   const visibleAssets = useMemo(() => {
     const source = activeTab === "characters" ? characterAssets
       : activeTab === "locations" ? locationAssets
@@ -3198,6 +3240,30 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
             />
             {activeScene ? <small>{sceneGroups.length} 场 · 当前 {activeScene.shots.length} 镜头{activeScene.draftCount ? ` · ${activeScene.draftCount} 待导入` : ""}</small> : <small>还没有可用场次</small>}
           </div> : null}
+          {activeTab === "shots" ? <StoryboardWorkflow nodes={storyboardWorkflow} onSelect={(index) => {
+            if (index === 0) {
+              if (activeDraftGroups.length) openStoryboardImport();
+              return;
+            }
+            if (index === 1) {
+              if (activeScene?.scene) selectAsset(assetKey(activeScene.scene));
+              else openCreateScene();
+              return;
+            }
+            if (index === 2) {
+              if (activeScene?.scene) selectAsset(assetKey(activeScene.scene));
+              return;
+            }
+            if (index === 3) {
+              if (activeShotAssets[0]) selectAsset(assetKey(activeShotAssets[0]));
+              else openCreate();
+              return;
+            }
+            if (activeShotAssets[0]) {
+              selectAsset(assetKey(activeShotAssets[0]));
+              window.setTimeout(openGeneration, 0);
+            }
+          }} /> : null}
           <div className="asset-list-tools"><div className="asset-search"><span aria-hidden="true">⌕</span><input aria-label={activeTab === "characters" ? "搜索人物" : activeTab === "locations" ? "搜索地点/环境" : activeTab === "props" ? "搜索道具" : "搜索当前场次镜头"} onChange={(event) => changeSearch(event.target.value)} placeholder={activeTab === "characters" ? "搜索人物" : activeTab === "locations" ? "搜索地点/环境" : activeTab === "props" ? "搜索道具" : "搜索当前场次镜头"} value={search} />{search ? <button aria-label="清空搜索" className="asset-search-clear" onClick={() => changeSearch("")} type="button">×</button> : null}</div>{activeTab === "characters" || activeTab === "locations" || activeTab === "props" ? <button aria-label="新建资产" className="add-asset-button" onClick={openCreate} type="button"><span aria-hidden="true">＋</span><b>新建</b></button> : <div className="scene-create-actions"><button aria-label="新建场次" className="add-asset-button is-secondary" onClick={openCreateScene} type="button"><span aria-hidden="true">＋</span><b>场次</b></button><button aria-label="新建镜头" className="add-asset-button" onClick={openCreate} type="button"><span aria-hidden="true">＋</span><b>镜头</b></button></div>}</div>
           {activeTab === "shots" ? <button className="import-storyboard-button" disabled={busy || !activeDraftGroups.length} onClick={openStoryboardImport} type="button"><span aria-hidden="true">⇣</span>导入当前场次剧本{activeDraftGroups.length ? <b>{activeDraftGroups.reduce((total, group) => total + group.shots.length, 0)}</b> : null}</button> : null}
           {activeTab === "shots" && activeScene?.scene ? <div className="scene-asset-summary"><SceneAssetCard active={assetKey(activeScene.scene) === selectedKey} onClick={() => selectAsset(assetKey(activeScene.scene!))} scene={activeScene.scene} /></div> : activeTab === "shots" && activeScene ? <button className="scene-asset-create-note" disabled={busy} onClick={() => void handleCreateScene(activeScene.sceneId)} type="button"><span>当前场次还没有独立资料文件夹</span><b>建立场次资产</b></button> : null}

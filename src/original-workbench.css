@@ -426,6 +426,75 @@ summary:focus-visible {
   font-size: 10px;
 }
 
+.storyboard-workflow {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+  margin: 12px 4px 10px;
+  overflow-x: auto;
+  padding: 2px 0 5px;
+  scrollbar-width: none;
+}
+
+.storyboard-workflow::-webkit-scrollbar {
+  display: none;
+}
+
+.storyboard-workflow-node {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  font-size: 10px;
+  gap: 4px;
+  min-width: 42px;
+  padding: 0;
+}
+
+.storyboard-workflow-node:hover { color: var(--text); }
+
+.storyboard-workflow-node.is-current { color: var(--ink); font-weight: 650; }
+.storyboard-workflow-node.is-done { color: var(--text-secondary); }
+
+.storyboard-workflow-index {
+  align-items: center;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  display: inline-flex;
+  font-family: var(--mono);
+  font-size: 9px;
+  height: 24px;
+  justify-content: center;
+  width: 24px;
+}
+
+.storyboard-workflow-node.is-current .storyboard-workflow-index {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+  box-shadow: 0 0 0 3px var(--ink-8);
+}
+
+.storyboard-workflow-node.is-done .storyboard-workflow-index {
+  background: var(--text-secondary);
+  border-color: var(--text-secondary);
+  color: var(--paper);
+}
+
+.storyboard-workflow-line {
+  background: var(--border);
+  flex: 1 0 14px;
+  height: 1px;
+  margin: -14px 0 0;
+  min-width: 14px;
+}
+
+.storyboard-workflow-line.is-done { background: var(--text-secondary); }
+
 .asset-list-tools {
   align-items: center;
   display: flex;
