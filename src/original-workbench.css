@@ -5313,10 +5313,11 @@ summary:focus-visible {
   padding: 0 10px;
 }
 
-/* Navigation only lives in the first rail. Browsing and creation get their
-   own column so the production hierarchy stays visible. */
+/* One continuous rail: navigation is the rail header and the browser sits
+   directly below it, instead of reading as two competing sidebars. */
 .asset-workspace-grid {
-  grid-template-columns: 168px 286px minmax(0, 1fr);
+  grid-template-columns: 300px minmax(0, 1fr);
+  position: relative;
 }
 
 .workspace-navigation,
@@ -5327,14 +5328,20 @@ summary:focus-visible {
 .workspace-navigation {
   background: var(--ash);
   border-right: 1px solid var(--border);
-  height: calc(100vh - 54px);
-  padding: 18px 12px;
-  position: sticky;
-  top: 54px;
+  height: 142px;
+  left: 0;
+  padding: 17px 16px 10px;
+  position: absolute;
+  top: 0;
+  width: 300px;
+  z-index: 2;
 }
 
 .workspace-navigation-heading {
-  padding: 0 5px 16px;
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  padding: 0 5px 12px;
 }
 
 .workspace-navigation-heading h1 {
@@ -5348,25 +5355,25 @@ summary:focus-visible {
   background: transparent;
   border: 0;
   display: grid;
-  gap: 2px;
-  grid-template-columns: 1fr;
+  gap: 4px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   padding: 0;
 }
 
 .navigation-section-label {
-  border-top: 1px solid var(--border);
+  align-self: end;
+  border-top: 0;
+  grid-column: span 4;
   color: var(--text-muted);
   font-size: 10px;
   font-weight: 650;
   letter-spacing: 0.06em;
-  margin: 11px 4px 3px;
-  padding-top: 11px;
+  margin: 0 4px -1px;
+  padding-top: 0;
 }
 
 .navigation-section-label:first-child {
-  border-top: 0;
   margin-top: 0;
-  padding-top: 0;
 }
 
 .asset-tabs button,
@@ -5395,9 +5402,13 @@ summary:focus-visible {
   display: flex;
   flex-direction: column;
   height: calc(100vh - 54px);
-  padding: 18px 12px 12px;
-  position: sticky;
-  top: 54px;
+  grid-column: 1;
+  height: calc(100vh - 54px);
+  padding: 162px 16px 12px;
+}
+
+.asset-browser-heading {
+  display: none;
 }
 
 .asset-browser-heading {
@@ -5428,7 +5439,9 @@ summary:focus-visible {
 }
 
 .asset-browser .asset-list-heading {
-  margin: 8px 4px 5px;
+  border-top: 1px solid var(--border);
+  margin: 10px 0 5px;
+  padding: 10px 4px 0;
 }
 
 .asset-browser .asset-card-list {
@@ -5445,8 +5458,10 @@ summary:focus-visible {
 
 @media (max-width: 980px) {
   .asset-workspace-grid {
-    grid-template-columns: 150px 252px minmax(0, 1fr);
+    grid-template-columns: 276px minmax(0, 1fr);
   }
+
+  .workspace-navigation { width: 276px; }
 
   .asset-studio-column {
     padding-left: 24px;
@@ -5467,8 +5482,10 @@ summary:focus-visible {
   }
 
   .workspace-navigation {
+    height: auto;
     border-bottom: 1px solid var(--border);
     padding: 12px;
+    width: auto;
   }
 
   .workspace-navigation-heading {
@@ -5497,8 +5514,12 @@ summary:focus-visible {
 
   .asset-browser {
     border-bottom: 1px solid var(--border);
+    grid-column: auto;
     max-height: 42vh;
+    padding: 12px;
   }
+
+  .asset-browser-heading { display: flex; }
 }
 
 @media (max-width: 900px) {
