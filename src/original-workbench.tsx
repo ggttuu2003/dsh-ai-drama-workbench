@@ -1545,6 +1545,11 @@ function GenerationModal({
     setSubmitting(true);
     setError(null);
     try {
+      // Always run the preflight immediately before submission so the primary
+      // action does not require a separate manual click.
+      const previewData = await request<{ preview: ComfyPreview }>("/jobs/preview", { body: JSON.stringify(payload()), method: "POST" });
+      setPreview(previewData.preview);
+      if (previewData.preview.errors?.length) return;
       const data = await request<{ job: ComfyJob }>("/jobs", { body: JSON.stringify(payload()), method: "POST" });
       setJobs((current) => [data.job, ...current]);
       setPreview(null);
@@ -1578,7 +1583,7 @@ function GenerationModal({
   }
 
   const profileReady = Boolean(activeProfile?.enabled && activeProfile?.configured);
-  const canSubmit = Boolean(activePreset && profileReady && preview && !preview.errors?.length);
+  const canSubmit = Boolean(activePreset && profileReady);
   const isVideo = activePreset?.outputKind === "video";
   const supportsInput = (key: string) => Boolean(activePreset?.inputs?.some((input) => input.key === key));
   const hasEditableVideoSpec = ["width", "height", "durationSeconds", "frames", "fps"].some(supportsInput);
@@ -1634,7 +1639,7 @@ function GenerationModal({
           {jobs.length ? <section className="generation-job-list"><div><p className="eyebrow">当前资产任务</p><strong>{jobs.length} 个</strong></div>{jobs.slice(0, 4).map((job) => <article key={job.id}><span className={`generation-job-dot is-${job.status}`} /><div><strong>{job.presetLabel || "ComfyUI 任务"}</strong><small>{formatComfyJobStatus(job)}{formatComfyJobDetail(job)}</small></div>{job.outputPaths?.length ? <em>已归档</em> : null}{job.status === "queued" ? <button className="text-button generation-job-action" disabled={actingJobId === job.id} onClick={() => void actOnJob(job, "cancel")} type="button">取消排队</button> : null}{["failed", "cancelled"].includes(job.status) ? <button className="text-button generation-job-action" disabled={actingJobId === job.id} onClick={() => void actOnJob(job, "retry")} type="button">{actingJobId === job.id ? "处理中…" : "重试"}</button> : null}</article>)}</section> : null}
         </>}
       </div>
-      <footer className="modal-actions generation-modal-actions"><button className="text-button" onClick={onClose} type="button">取消</button><button className="text-button" disabled={loading || submitting || !activePreset} onClick={() => void inspectInputs()} type="button">检查输入</button><button className="submit-button" disabled={loading || submitting || !canSubmit} onClick={() => void queueJob()} type="button">{submitting ? "处理中…" : "确认生成"}</button></footer>
+      <footer className="modal-actions generation-modal-actions"><button className="text-button" onClick={onClose} type="button">取消</button><button className="text-button" disabled={loading || submitting || !activePreset} onClick={() => void inspectInputs()} type="button">检查输入</button><button className="submit-button" disabled={loading || submitting || !canSubmit} onClick={() => void queueJob()} type="button">{submitting ? "检查并提交…" : "确认生成"}</button></footer>
     </section>
   </div>;
 }
