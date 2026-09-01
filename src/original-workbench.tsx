@@ -1841,6 +1841,8 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   const [designDraft, setDesignDraft] = useState<ShotDesign>(EMPTY_DESIGN);
   const [shotDesignMode, setShotDesignMode] = useState<"preview" | "edit">("preview");
   const [activeShotWorkflowStep, setActiveShotWorkflowStep] = useState<ShotWorkflowStepId>("design");
+  const [generationTarget, setGenerationTarget] = useState<WorkspaceSelectionAsset | null>(null);
+  const [pendingSceneGenerationPath, setPendingSceneGenerationPath] = useState<string | null>(null);
   const [generationPresetId, setGenerationPresetId] = useState<string | undefined>();
   const [generationDurationSeconds, setGenerationDurationSeconds] = useState<string | undefined>();
   const workflowShotRootRef = useRef<string | null>(null);
@@ -2362,7 +2364,14 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (mediaPreview) setMediaPreview(null);
-      else setModal(null);
+      else {
+        setModal(null);
+        if (modal === "generation") {
+          setGenerationTarget(null);
+          setGenerationDurationSeconds(undefined);
+          setGenerationPresetId(undefined);
+        }
+      }
     };
     window.addEventListener("keydown", handleEscape);
     return () => {
@@ -2383,6 +2392,18 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   useEffect(() => () => {
     if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
   }, []);
+
+  useEffect(() => {
+    if (!pendingSceneGenerationPath) return;
+    const scene = sceneAssets.find((asset) => asset.rootPath === pendingSceneGenerationPath);
+    if (!scene) return;
+    setPendingSceneGenerationPath(null);
+    setGenerationTarget(scene);
+    setGenerationDurationSeconds(undefined);
+    setGenerationPresetId("scene-image-v1");
+    setModal("generation");
+    notify("success", "已准备本场场景资产");
+  }, [notify, pendingSceneGenerationPath, sceneAssets]);
 
   const handleGenerationJobsObserved = useCallback((assetPath: string, jobs: ComfyJob[]) => {
     const result = reconcileComfyJobWatches(generationJobWatchesRef.current, assetPath, jobs);
@@ -2507,6 +2528,10 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
 
       // Reset every project-local selection before reading the new project's real files.
       setModal(null);
+      setGenerationTarget(null);
+      setPendingSceneGenerationPath(null);
+      setGenerationDurationSeconds(undefined);
+      setGenerationPresetId(undefined);
       setMediaPreview(null);
       setSourceContextOpen(false);
       setImportSourcePath(null);
@@ -3394,13 +3419,39 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
         : undefined,
     );
     if (selectedAsset.type === "shot" && selectedAsset.isDraft) {
+      setGenerationTarget(selectedAsset);
       setGenerationPresetId(initialPresetId);
       setModal("generation");
       return;
     }
     if (!skipLeaveDraftCheck && !confirmLeaveDraft("生成任务只读取当前已保存的 Markdown；纯文生图不上传参考图，图生图和视频工作流会在检查输入后上传明确列出的已选图片。未保存的编辑不会带入本次任务，是否继续？")) return;
+    setGenerationTarget(selectedAsset);
     setGenerationPresetId(initialPresetId);
     setModal("generation");
+  };
+
+  const handleGenerateSceneImageFromShot = async () => {
+    if (!selectedAsset || selectedAsset.type !== "shot" || selectedAsset.isDraft) return;
+    if (!designDraft.prompt.trim() && !designDraft.content.trim()) {
+      notify("error", "请先保存镜头画面或提示词");
+      return;
+    }
+    if (hasUnsavedShotDesign && !(await handleSave())) return;
+
+    setBusy(true);
+    try {
+      const result = await postAction<{ path?: string }>({
+        action: "prepareSceneImageFromShot",
+        shotPath: selectedAsset.rootPath,
+      });
+      if (!result.path) throw new Error("无法建立当前场次资产");
+      if (!(await loadSnapshot(true))) throw new Error("场次资产已建立，但刷新失败。请重试。");
+      setPendingSceneGenerationPath(result.path);
+    } catch (error) {
+      notify("error", error instanceof Error ? error.message : "无法准备场景图");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const advanceShotWorkflow = async () => {
@@ -3760,7 +3811,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
               {(selectedAsset.isDraft || activeShotWorkflowStep === "design") && selectedSourcePath ? <section className="source-context-card"><div className="source-context-heading"><div><p className="eyebrow">来源上下文</p><h3>{displayFileName(selectedSourcePath)}</h3><small title={selectedSourcePath}>原始分镜脚本</small></div><button className="source-context-toggle" disabled={sourceContext.loading} onClick={() => void toggleSourceContext()} type="button">{sourceContextOpen ? "收起原文" : sourceContext.error && sourceContext.path === selectedSourcePath ? "重新读取" : "查看原文"}</button></div>{sourceContextOpen ? <div className="source-context-body">{sourceContext.path !== selectedSourcePath || sourceContext.loading ? <p>正在读取原始剧本…</p> : sourceContext.error ? <p className="source-context-error">{sourceContext.error}</p> : <pre>{sourceContext.content || "原始剧本为空。"}</pre>}</div> : null}</section> : null}
               {!selectedAsset.isDraft && activeShotWorkflowStep === "design" ? <WorkflowStepFooter disabled={busy} label="保存并下一步" onClick={() => void advanceShotWorkflow()} /> : null}
               {!selectedAsset.isDraft && activeShotWorkflowStep === "reference" ? <section className="workflow-step-content">
-                <div className="workflow-step-heading"><div><p className="eyebrow">02 / 05</p><h3>画面参考</h3></div></div>
+                <div className="workflow-step-heading"><div><p className="eyebrow">02 / 05</p><h3>画面参考</h3></div><button className="studio-action-button generation-open-button" disabled={busy} onClick={() => void handleGenerateSceneImageFromShot()} type="button">生成场景图</button></div>
                 <div className="workflow-reference-overview" aria-label="当前镜头继承资料">
                   <span className="workflow-reference-chip">{activeScene?.sceneId || selectedAsset.design.sceneId}</span>
                   {effectiveCastForSelectedShot.map((entry) => {
@@ -3853,13 +3904,13 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
         structure={projectStructure}
       />
 
-      {modal === "generation" && selectedAsset ? <GenerationModal
-        asset={selectedAsset}
+      {modal === "generation" && generationTarget ? <GenerationModal
+        asset={generationTarget}
         initialDurationSeconds={generationDurationSeconds}
         initialPresetId={generationPresetId}
-        lookPath={selectedAsset.type === "character" ? selectedCharacterLook?.rootPath : undefined}
+        lookPath={generationTarget.type === "character" && selectedAsset?.type === "character" ? selectedCharacterLook?.rootPath : undefined}
         projectId={projectId ?? undefined}
-        onClose={() => { setModal(null); setGenerationDurationSeconds(undefined); setGenerationPresetId(undefined); }}
+        onClose={() => { setModal(null); setGenerationTarget(null); setGenerationDurationSeconds(undefined); setGenerationPresetId(undefined); }}
         onJobsObserved={handleGenerationJobsObserved}
         onQueued={handleGenerationQueued}
       /> : modal === "trashList" ? <TrashModal

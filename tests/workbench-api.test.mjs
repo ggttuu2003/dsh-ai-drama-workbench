@@ -129,6 +129,70 @@ test('full workbench compatibility API reads and writes only its active temporar
   }
 })
 
+test('a shot can prepare its scene image asset without overwriting an authored scene brief', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'dsh-ai-drama-scene-image-api-'))
+  const root = await realpath(temporaryRoot)
+  const state = { root: async () => root }
+
+  try {
+    const shot = await call(state, jsonRequest({
+      action: 'createShot',
+      sceneId: 'EP001-SC020',
+      shotId: 'SH001',
+      title: '焦土尽头',
+      design: {
+        sceneId: 'EP001-SC020',
+        shotId: 'SH001',
+        title: '焦土尽头',
+        timecode: '',
+        duration: '',
+        framing: '全景',
+        content: '焦土尽头的断壁残垣与低垂铅云。',
+        dialogue: '',
+        camera: '',
+        prompt: '末日焦土，断壁残垣，铅灰色天空，电影感全景',
+        negativePrompt: '',
+        references: '',
+        status: '待生成',
+      },
+    }), 'http://127.0.0.1/ai-drama/workbench/assets')
+    assert.equal(shot.status, 200)
+
+    const prepared = await call(state, jsonRequest({
+      action: 'prepareSceneImageFromShot',
+      shotPath: shot.payload.path,
+    }), 'http://127.0.0.1/ai-drama/workbench/assets')
+    assert.equal(prepared.status, 200)
+    assert.equal(prepared.payload.path, '分镜/EP001-SC020')
+
+    const seeded = await call(state, getRequest(), 'http://127.0.0.1/ai-drama/workbench/project')
+    const scene = seeded.payload.scenes.find(asset => asset.rootPath === prepared.payload.path)
+    assert.ok(scene)
+    assert.match(scene.sceneContent, /场景图提示词/u)
+    assert.match(scene.sceneContent, /末日焦土/u)
+
+    const saved = await call(state, jsonRequest({
+      action: 'updateSceneDocument',
+      assetPath: scene.rootPath,
+      content: '# EP001-SC020 场次资产\n\n用户维护的场景说明。',
+      expectedRevision: scene.sceneRevision,
+    }), 'http://127.0.0.1/ai-drama/workbench/assets')
+    assert.equal(saved.status, 200)
+
+    const preparedAgain = await call(state, jsonRequest({
+      action: 'prepareSceneImageFromShot',
+      shotPath: shot.payload.path,
+    }), 'http://127.0.0.1/ai-drama/workbench/assets')
+    assert.equal(preparedAgain.status, 200)
+    const preserved = await call(state, getRequest(), 'http://127.0.0.1/ai-drama/workbench/project')
+    const preservedScene = preserved.payload.scenes.find(asset => asset.rootPath === prepared.payload.path)
+    assert.match(preservedScene.sceneContent, /用户维护的场景说明/u)
+    assert.doesNotMatch(preservedScene.sceneContent, /末日焦土/u)
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true })
+  }
+})
+
 test('project settings can be saved through the workbench API with revision protection', async () => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'dsh-ai-drama-project-settings-api-'))
   const root = await realpath(temporaryRoot)

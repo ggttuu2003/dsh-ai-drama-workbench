@@ -2889,6 +2889,36 @@ function serializeSceneDocument(sceneId: string, source?: ShotSource): string {
   ].join("\n");
 }
 
+function isUnconfiguredSceneDocument(content: string): boolean {
+  const remaining = content
+    .replace(/^# .*场次资产\s*$/gmu, "")
+    .replace(/^## 场次说明\s*$/gmu, "")
+    .replace(/^- \*\*来源脚本：\*\*.*$/gmu, "")
+    .replace(/^- \*\*制作状态：\*\* 待准备\s*$/gmu, "")
+    .replace(/^- \*\*说明：\*\* 在这里补充本场的空间关系、统一视觉、连续性和交付要求。\s*$/gmu, "")
+    .trim();
+  return !remaining;
+}
+
+function serializeSceneImagePrompt(sceneId: string, shot: ShotAsset, sourcePath?: string): string {
+  const prompt = (shot.design.prompt || shot.design.content || "").trim();
+  const sourceLabel = [shot.design.shotId, shot.design.title].filter(Boolean).join(" · ");
+  return [
+    `# ${validateNewName(sceneId)} 场次资产`,
+    "",
+    "## 场次说明",
+    "",
+    ...(sourcePath ? [`- **来源脚本：** ${sourcePath}`] : []),
+    "- **制作状态：** 待准备",
+    ...(sourceLabel ? [`- **自动来源镜头：** ${sourceLabel}`] : []),
+    "",
+    "## 场景图提示词",
+    "",
+    prompt,
+    "",
+  ].join("\n");
+}
+
 async function writeTextAtomically(target: string, content: string): Promise<void> {
   if (Buffer.byteLength(content, "utf8") > MAX_TEXT_ASSET_BYTES) {
     throw new ProjectPathError("Text assets must be smaller than 2 MB.");
@@ -3113,6 +3143,32 @@ export async function createSceneAsset(sceneId: string): Promise<string> {
   const relativePath = makeRelative(root, directory);
   await writeAudit({ action: created ? "create-scene" : "complete-scene", path: relativePath });
   return relativePath;
+}
+
+/**
+ * Makes the current shot's saved visual brief immediately usable as a scene
+ * image prompt. Existing scene writing always wins; only the untouched
+ * scaffold is replaced so a later shot cannot overwrite an authored scene.
+ */
+export async function prepareSceneImageFromShot(shotPath: string): Promise<string> {
+  const verifiedShot = await getVerifiedWorkspaceAsset("shot", shotPath);
+  const shot = verifiedShot.shot;
+  if (!shot) throw new ProjectPathError("当前镜头资产已不存在。");
+  const prompt = (shot.design.prompt || shot.design.content || "").trim();
+  if (!prompt) throw new ProjectPathError("请先保存镜头画面或提示词，再生成场景图。");
+
+  const scenePath = await createSceneAsset(shot.design.sceneId);
+  const snapshot = await getAssetWorkspaceSnapshot();
+  const scene = snapshot.scenes.find((asset) => asset.rootPath === scenePath);
+  if (!scene?.scenePath) throw new ProjectPathError("场次资产已建立，但无法读取场次说明。");
+  if (!isUnconfiguredSceneDocument(scene.sceneContent || "")) return scenePath;
+
+  await updateSceneDocument(
+    scene.rootPath,
+    serializeSceneImagePrompt(scene.sceneId, shot, scene.sourcePath || shot.sourcePath),
+    scene.sceneRevision,
+  );
+  return scenePath;
 }
 
 async function createSimpleDocumentAsset(
