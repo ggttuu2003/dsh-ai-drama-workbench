@@ -194,6 +194,24 @@ async function getSshStatus(config = undefined) {
     : { state: 'stopped', label: '已停止' }
 }
 
+function runRemoteBridgeStart(config, environment) {
+  return new Promise((resolve, reject) => {
+    const destination = `${config.user}@${config.host}`
+    const args = ['-T', '-o', 'ConnectTimeout=15', '-o', 'BatchMode=no', '-o', 'PubkeyAuthentication=no', '-o', 'PasswordAuthentication=yes', '-o', 'PreferredAuthentications=password', '-o', 'ControlPath=none', '-o', 'IdentityAgent=none', '-p', String(config.port), destination, 'cd /root/comfy-bridge && nohup ./run.sh > bridge.log 2>&1 </dev/null &']
+    const child = spawn('ssh', args, { env: environment, stdio: ['ignore', 'ignore', 'pipe'] })
+    let detail = ''
+    const timer = setTimeout(() => { child.kill('SIGTERM'); reject(new WorkbenchError('远程启动 Comfy Bridge 超时。')) }, 20_000)
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', chunk => { detail = `${detail}${chunk}`.slice(-500) })
+    child.once('error', error => { clearTimeout(timer); reject(error) })
+    child.once('close', code => {
+      clearTimeout(timer)
+      if (code === 0) resolve()
+      else reject(new WorkbenchError(`远程启动 Comfy Bridge 失败${detail.trim() ? `：${detail.trim()}` : `（ssh 已退出 ${code}）`}`))
+    })
+  })
+}
+
 async function startSshTunnel(rawConfig) {
   const input = rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig) ? rawConfig : {}
   const config = normalizeSshConfig(input)
@@ -245,6 +263,12 @@ async function startSshTunnel(rawConfig) {
       release()
       if (sshProcess === child) sshProcess = null
     })
+    // The tunnel alone is not enough: recover the fixed bridge service when it is down.
+    await new Promise(resolve => setTimeout(resolve, 350))
+    const status = await getSshStatus(saved)
+    if (status.state === 'error' && status.label === 'Bridge 异常') {
+      await runRemoteBridgeStart(saved, environment)
+    }
   } catch (error) {
     transientPassword = ''
     releaseSshAskpass(askpass?.cleanup)
