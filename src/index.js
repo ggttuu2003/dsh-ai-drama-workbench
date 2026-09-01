@@ -189,7 +189,7 @@ async function startSshTunnel(rawConfig) {
   }
   const saved = await writeSshConfig(config)
   const destination = `${config.user}@${config.host}`
-  const args = ['-N', '-T', '-o', 'ExitOnForwardFailure=yes', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3', '-p', String(config.port), '-L', `127.0.0.1:${config.localPort}:${config.remoteHost}:${config.remotePort}`]
+  const args = ['-N', '-T', '-o', 'ExitOnForwardFailure=yes', '-o', 'ConnectTimeout=15', '-o', 'ConnectionAttempts=1', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3', '-p', String(config.port), '-L', `127.0.0.1:${config.localPort}:${config.remoteHost}:${config.remotePort}`]
   args.push('-o', 'BatchMode=no', '-o', 'PubkeyAuthentication=no', '-o', 'PasswordAuthentication=yes', '-o', 'PreferredAuthentications=password', '-o', 'ControlPath=none', '-o', 'IdentityAgent=none')
   args.push(destination)
   sshProcessError = ''
