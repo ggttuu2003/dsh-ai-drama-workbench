@@ -65,8 +65,13 @@ ROLE_CATEGORIES = ("待分类", "主角", "女主", "重要配角", "配角", "�
 CHARACTER_LOOK_DIRECTORY = "造型"
 CHARACTER_LOOK_DOCUMENT = "造型设定.md"
 SCENE_CAST_DOCUMENT = "出场与造型表.md"
+SCENE_ASSET_DOCUMENT = "场次资产表.md"
 SCENE_CAST_MARKER_START = "<!-- workbench:scene-cast:start -->"
 SCENE_CAST_MARKER_END = "<!-- workbench:scene-cast:end -->"
+SCENE_ASSET_MARKER_START = "<!-- workbench:scene-assets:start -->"
+SCENE_ASSET_MARKER_END = "<!-- workbench:scene-assets:end -->"
+SCENE_ASSET_PROJECTION_MARKER_START = "<!-- workbench:scene-assets:projection:start -->"
+SCENE_ASSET_PROJECTION_MARKER_END = "<!-- workbench:scene-assets:projection:end -->"
 SHOT_CHARACTER_OVERRIDES_MARKER_START = "<!-- workbench:shot-character-overrides:start -->"
 SHOT_CHARACTER_OVERRIDES_MARKER_END = "<!-- workbench:shot-character-overrides:end -->"
 LOOK_ID_RE = re.compile(r"^LOOK-(\d{1,6})$", re.IGNORECASE)
@@ -764,6 +769,29 @@ def normalize_scene_cast_binding(raw: Any, index: int) -> dict[str, str]:
     }
 
 
+def normalize_scene_asset_binding(raw: Any, index: int, kind: str) -> dict[str, str]:
+    """Normalize a scene-level location/prop binding before path resolution."""
+    item = require_mapping(raw, f"场次{kind}绑定第 {index} 项")
+    name_key = "location" if kind == "场景" else "prop"
+    path_key = "locationPath" if kind == "场景" else "propPath"
+    name = item.get(name_key, item.get("name"))
+    if name is None and item.get(path_key) is not None:
+        requested_path = read_text_value(item.get(path_key), f"场次{kind}绑定路径", maximum=240, multiline=False)
+        path_parts = Path(requested_path).parts
+        expected_root = "场景" if kind == "场景" else "道具"
+        if len(path_parts) != 2 or path_parts[0] != expected_root:
+            raise PlannerError(f"场次{kind}绑定路径必须是项目相对的 {expected_root}/名称。")
+        name = path_parts[1]
+    return {
+        name_key: safe_segment(name, f"场次{kind}绑定名称"),
+        "role": read_text_value(item.get("role"), f"场次{kind}绑定角色", maximum=MAX_SHORT_TEXT_CHARS, multiline=False, required=False, fallback=kind),
+        "state": read_text_value(item.get("state"), f"场次{kind}状态", maximum=MAX_SHORT_TEXT_CHARS, multiline=False, required=False),
+        "continuity": read_text_value(item.get("continuity"), f"场次{kind}连续性", maximum=MAX_SHORT_TEXT_CHARS, multiline=False, required=False),
+        "start_shot_id": normalize_optional_shot_id(item.get("start_shot_id", item.get("startShotId")), f"{kind}绑定起始镜头"),
+        "end_shot_id": normalize_optional_shot_id(item.get("end_shot_id", item.get("endShotId")), f"{kind}绑定结束镜头"),
+    }
+
+
 def normalize_shot_character_override(raw: Any, index: int) -> dict[str, str]:
     item = require_mapping(raw, f"镜头人物造型覆盖第 {index} 项")
     mode = read_text_value(item.get("mode"), "镜头造型处理方式", maximum=32, multiline=False)
@@ -816,6 +844,25 @@ def normalize_new_scene(raw: Any, index: int) -> dict[str, Any]:
     cast = [normalize_scene_cast_binding(binding, binding_index) for binding_index, binding in enumerate(
         require_list(item.get("cast"), "场次出场与造型", MAX_SCENE_CAST_BINDINGS), start=1
     )]
+    location_bindings = [normalize_scene_asset_binding(binding, binding_index, "场景") for binding_index, binding in enumerate(
+        require_list(item.get("location_bindings"), "场次场景绑定", MAX_LOCATIONS), start=1
+    )]
+    prop_bindings = [normalize_scene_asset_binding(binding, binding_index, "道具") for binding_index, binding in enumerate(
+        require_list(item.get("prop_bindings"), "场次道具绑定", MAX_PROPS), start=1
+    )]
+    for bindings, label in ((location_bindings, "场景"), (prop_bindings, "道具")):
+        for binding in bindings:
+            if binding["start_shot_id"] and binding["end_shot_id"] and int(binding["start_shot_id"][2:]) > int(binding["end_shot_id"][2:]):
+                raise PlannerError(f"场次{label}绑定的结束镜头不能早于起始镜头。")
+            for field in ("start_shot_id", "end_shot_id"):
+                if binding[field] and binding[field] not in seen_shots:
+                    raise PlannerError(f"场次{label}绑定引用了不存在的镜头：{binding[field]}。")
+    location_refs = string_list(item.get("location_refs"), "场次场景引用", maximum=40)
+    prop_refs = string_list(item.get("prop_refs"), "场次道具引用", maximum=40)
+    if not location_refs:
+        location_refs = [binding["location"] for binding in location_bindings]
+    if not prop_refs:
+        prop_refs = [binding["prop"] for binding in prop_bindings]
     return {
         "scene_id": safe_segment(item.get("scene_id"), "场次 ID"),
         "title": safe_segment(item.get("title"), "场次标题"),
@@ -824,8 +871,10 @@ def normalize_new_scene(raw: Any, index: int) -> dict[str, Any]:
         "mood": read_text_value(item.get("mood"), "场次氛围", maximum=MAX_LONG_TEXT_CHARS, required=False),
         "continuity": read_text_value(item.get("continuity"), "场次连续性", maximum=MAX_LONG_TEXT_CHARS, required=False),
         "character_refs": string_list(item.get("character_refs"), "场次人物引用", maximum=40),
-        "location_refs": string_list(item.get("location_refs"), "场次场景引用", maximum=40),
-        "prop_refs": string_list(item.get("prop_refs"), "场次道具引用", maximum=40),
+        "location_refs": location_refs,
+        "prop_refs": prop_refs,
+        "location_bindings": location_bindings,
+        "prop_bindings": prop_bindings,
         "cast": cast,
         "shots": shots,
     }
@@ -912,6 +961,42 @@ def resolve_look_reference(character: dict[str, Any], requested: str, label: str
     if len(matches) > 1:
         raise PlannerError(f"{label}“{requested}”在人物“{character['name']}”下不唯一，请使用 LOOK 编号。")
     return str(matches[0]["path"])
+
+
+def build_asset_catalog(snapshot: dict[str, Any], new_items: list[dict[str, Any]], root_name: str) -> dict[str, dict[str, str]]:
+    catalog: dict[str, dict[str, str]] = {}
+    for existing in snapshot["locations" if root_name == "场景" else "props"]:
+        catalog[str(existing["name"]).casefold()] = {"name": str(existing["name"]), "path": str(existing["path"])}
+    for item in new_items:
+        catalog[str(item["name"]).casefold()] = {"name": str(item["name"]), "path": f"{root_name}/{item['name']}"}
+    return catalog
+
+
+def resolve_scene_asset_bindings(scene: dict[str, Any], catalog: dict[str, dict[str, str]], key: str, kind: str) -> list[dict[str, str]]:
+    bindings: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in scene[key]:
+        name_key = "location" if kind == "场景" else "prop"
+        asset = catalog.get(item[name_key].casefold())
+        if not asset:
+            raise PlannerError(f"场次{kind}绑定“{item[name_key]}”不在本次新建或当前项目{kind}中。")
+        binding = {
+            f"{name_key}Path": asset["path"],
+            "role": item["role"],
+            "state": item["state"],
+            "continuity": item["continuity"],
+            "startShotId": item["start_shot_id"],
+            "endShotId": item["end_shot_id"],
+        }
+        identity = (asset["path"].casefold(), binding["startShotId"], binding["endShotId"])
+        if identity in seen:
+            raise PlannerError(f"场次{kind}绑定重复：{asset['name']}。")
+        seen.add(identity)
+        for previous in bindings:
+            if previous[f"{name_key}Path"] == binding[f"{name_key}Path"] and ranges_overlap(previous, binding):
+                raise PlannerError(f"同一{kind}在重叠镜头范围内只能有一条场次绑定。")
+        bindings.append(binding)
+    return bindings
 
 
 def ranges_overlap(left: dict[str, str], right: dict[str, str]) -> bool:
@@ -1034,7 +1119,33 @@ def normalize_plan(value: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
     # The user-facing proposal uses names; persisted Markdown uses exact paths
     # so the workbench can distinguish the identity baseline from a reusable LOOK.
     character_catalog = build_character_catalog(snapshot, new_characters, look_additions)
+    location_catalog = build_asset_catalog(snapshot, new_locations, "场景")
+    prop_catalog = build_asset_catalog(snapshot, new_props, "道具")
     for scene in new_scenes:
+        # Legacy plans only supplied refs; preserve them and materialize a
+        # whole-scene default binding for the new machine-readable table.
+        if not scene["location_bindings"]:
+            scene["location_bindings"] = [
+                {"location": name, "role": "场景", "state": "", "continuity": "", "start_shot_id": "", "end_shot_id": ""}
+                for name in scene["location_refs"]
+            ]
+        if not scene["prop_bindings"]:
+            scene["prop_bindings"] = [
+                {"prop": name, "role": "道具", "state": "", "continuity": "", "start_shot_id": "", "end_shot_id": ""}
+                for name in scene["prop_refs"]
+            ]
+        # Explicit bindings may refine only part of the legacy refs list;
+        # retain every textual reference by adding a default whole-scene row.
+        location_bound_names = {item["location"].casefold() for item in scene["location_bindings"]}
+        for name in scene["location_refs"]:
+            if name.casefold() not in location_bound_names:
+                scene["location_bindings"].append({"location": name, "role": "场景", "state": "", "continuity": "", "start_shot_id": "", "end_shot_id": ""})
+        prop_bound_names = {item["prop"].casefold() for item in scene["prop_bindings"]}
+        for name in scene["prop_refs"]:
+            if name.casefold() not in prop_bound_names:
+                scene["prop_bindings"].append({"prop": name, "role": "道具", "state": "", "continuity": "", "start_shot_id": "", "end_shot_id": ""})
+        scene["location_asset_bindings"] = resolve_scene_asset_bindings(scene, location_catalog, "location_bindings", "场景")
+        scene["prop_asset_bindings"] = resolve_scene_asset_bindings(scene, prop_catalog, "prop_bindings", "道具")
         scene["cast_bindings"] = resolve_scene_cast_bindings(scene, character_catalog)
         for shot in scene["shots"]:
             shot["resolved_character_overrides"] = resolve_shot_character_overrides(
@@ -1079,7 +1190,7 @@ def proposal_paths(plan: dict[str, Any]) -> list[str]:
         paths.extend([f"{base}/道具设定.md", *(f"{base}/{slot}/" for slot in PROP_SLOTS)])
     for scene in plan["new_scenes"]:
         base = f"分镜/{scene['scene_id']}"
-        paths.extend([f"{base}/场次.md", f"{base}/{SCENE_CAST_DOCUMENT}", *(f"{base}/{slot}/" for slot in SCENE_SLOTS)])
+        paths.extend([f"{base}/场次.md", f"{base}/{SCENE_CAST_DOCUMENT}", f"{base}/{SCENE_ASSET_DOCUMENT}", *(f"{base}/{slot}/" for slot in SCENE_SLOTS)])
         for shot in scene["shots"]:
             shot_base = f"{base}/{shot['id']}-{shot['title']}"
             paths.extend([f"{shot_base}/镜头.md", *(f"{shot_base}/{slot}/" for slot in SHOT_SLOTS)])
@@ -1108,6 +1219,10 @@ def proposal_summary(plan: dict[str, Any]) -> dict[str, Any]:
                 "title": scene["title"],
                 "shot_count": len(scene["shots"]),
                 "cast_binding_count": len(scene["cast_bindings"]),
+                "location_binding_count": len(scene["location_asset_bindings"]),
+                "prop_binding_count": len(scene["prop_asset_bindings"]),
+                "location_bindings": scene["location_asset_bindings"],
+                "prop_bindings": scene["prop_asset_bindings"],
             }
             for scene in plan["new_scenes"]
         ],
@@ -1431,6 +1546,53 @@ def scene_cast_document(scene: dict[str, Any]) -> str:
     ])
 
 
+def scene_asset_document(scene: dict[str, Any]) -> str:
+    """Persist exact project-relative location/prop bindings for the scene."""
+    locations = scene["location_asset_bindings"]
+    props = scene["prop_asset_bindings"]
+    # Keep both the JSON shape and the generated table projection identical
+    # to workspace-core so a later workbench save replaces, rather than
+    # appends to, this planner-produced document.
+    serialized = json.dumps({"version": 1, "locations": locations, "props": props}, ensure_ascii=False, indent=2)
+    def table_rows(items: list[dict[str, str]], label: str, path_key: str) -> list[str]:
+        rows = [
+            f"| {label} | 角色 | 生效镜头 | 状态 | 连续性 |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        if not items:
+            return [*rows, "| 尚未配置 | — | — | — | — |"]
+        for binding in items:
+            range_label = (
+                f"{binding['startShotId'] or '首镜'} - {binding['endShotId'] or '尾镜'}"
+                if binding["startShotId"] or binding["endShotId"] else "全场"
+            )
+            rows.append(
+                "| " + " | ".join(escape_markdown_table_cell(cell) for cell in [
+                    Path(binding[path_key]).name,
+                    binding["role"],
+                    range_label,
+                    binding["state"],
+                    binding["continuity"],
+                ]) + " |"
+            )
+        return rows
+    return "\n".join([
+        SCENE_ASSET_PROJECTION_MARKER_START,
+        f"# {scene['scene_id']} 场次资产表",
+        "",
+        SCENE_ASSET_MARKER_START,
+        serialized,
+        SCENE_ASSET_MARKER_END,
+        "",
+        "本表定义本场使用的地点与道具；镜头只记录临时状态覆盖。",
+        "",
+        *table_rows(locations, "地点", "locationPath"),
+        "",
+        *table_rows(props, "道具", "propPath"),
+        SCENE_ASSET_PROJECTION_MARKER_END,
+    ])
+
+
 def shot_character_overrides_section(overrides: list[dict[str, str]]) -> str:
     rows = []
     for override in overrides:
@@ -1551,6 +1713,7 @@ def build_stage_tree(stage: Path, proposal: dict[str, Any]) -> list[dict[str, st
         directory.mkdir(parents=True, exist_ok=False)
         write_markdown(directory / "场次.md", scene_document(scene, proposal_id))
         write_markdown(directory / SCENE_CAST_DOCUMENT, scene_cast_document(scene))
+        write_markdown(directory / SCENE_ASSET_DOCUMENT, scene_asset_document(scene))
         create_slots(directory, SCENE_SLOTS)
         for shot in scene["shots"]:
             shot_directory = directory / f"{shot['id']}-{shot['title']}"

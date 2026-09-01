@@ -144,5 +144,71 @@ class PlannerProjectScopeTest(unittest.TestCase):
             )
 
 
+class PlannerSceneAssetBindingTest(unittest.TestCase):
+    def snapshot(self) -> dict:
+        return {
+            "characters": [],
+            "locations": [{"name": "庭院", "path": "场景/庭院"}],
+            "props": [{"name": "短剑", "path": "道具/短剑"}],
+            "scenes": [],
+        }
+
+    def base_plan(self, scene: dict) -> dict:
+        return {
+            "title": "提案",
+            "summary": "概要",
+            "new_characters": [],
+            "look_additions": [],
+            "reuse_characters": [],
+            "new_locations": [],
+            "reuse_locations": [],
+            "new_props": [],
+            "reuse_props": [],
+            "new_scenes": [scene],
+            "reuse_scenes": [],
+            "notes": [],
+        }
+
+    def scene(self, **kwargs) -> dict:
+        value = {
+            "scene_id": "SC001",
+            "title": "庭院夜谈",
+            "summary": "两人交谈",
+            "character_refs": [],
+            "location_refs": ["庭院"],
+            "prop_refs": ["短剑"],
+            "cast": [],
+            "shots": [{"id": "SH001", "title": "近景", "content": "人物交谈"}],
+        }
+        value.update(kwargs)
+        return value
+
+    def test_refs_only_materialize_default_bindings_and_document(self) -> None:
+        plan = planner.normalize_plan(self.base_plan(self.scene()), self.snapshot())
+        scene = plan["new_scenes"][0]
+        self.assertEqual(scene["location_asset_bindings"][0]["locationPath"], "场景/庭院")
+        self.assertEqual(scene["prop_asset_bindings"][0]["propPath"], "道具/短剑")
+        document = planner.scene_asset_document(scene)
+        self.assertIn(planner.SCENE_ASSET_PROJECTION_MARKER_START, document)
+        self.assertIn(planner.SCENE_ASSET_MARKER_START, document)
+        self.assertIn('"locations": [', document)
+        self.assertIn('"props": [', document)
+        self.assertIn("| 地点 | 角色 | 生效镜头 | 状态 | 连续性 |", document)
+        self.assertIn("| 道具 | 角色 | 生效镜头 | 状态 | 连续性 |", document)
+
+    def test_explicit_binding_preserves_role_state_and_range(self) -> None:
+        scene = self.scene(
+            location_bindings=[{"locationPath": "场景/庭院", "role": "主环境", "state": "雨后", "continuity": "灯光不变", "startShotId": "SH001", "endShotId": "SH001"}],
+            prop_bindings=[{"prop": "短剑", "role": "线索", "state": "出鞘", "continuity": "右手持有", "start_shot_id": "SH001", "end_shot_id": "SH001"}],
+        )
+        normalized = planner.normalize_plan(self.base_plan(scene), self.snapshot())["new_scenes"][0]
+        self.assertEqual(normalized["location_asset_bindings"][0]["role"], "主环境")
+        self.assertEqual(normalized["prop_asset_bindings"][0]["continuity"], "右手持有")
+
+    def test_binding_range_must_reference_scene_shot(self) -> None:
+        scene = self.scene(location_bindings=[{"location": "庭院", "start_shot_id": "SH002"}])
+        with self.assertRaises(planner.PlannerError):
+            planner.normalize_plan(self.base_plan(scene), self.snapshot())
+
 if __name__ == "__main__":
     unittest.main()

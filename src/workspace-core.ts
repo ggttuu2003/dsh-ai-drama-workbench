@@ -22,6 +22,8 @@ import type {
   ProjectSnapshot,
   ProjectSettings,
   SceneCastBinding,
+  SceneLocationBinding,
+  ScenePropBinding,
   SceneAsset,
   ShotAsset,
   ShotCharacterOverride,
@@ -55,6 +57,11 @@ const SCENE_CAST_MARKER_START = "<!-- workbench:scene-cast:start -->";
 const SCENE_CAST_MARKER_END = "<!-- workbench:scene-cast:end -->";
 const SCENE_CAST_PROJECTION_MARKER_START = "<!-- workbench:scene-cast:projection:start -->";
 const SCENE_CAST_PROJECTION_MARKER_END = "<!-- workbench:scene-cast:projection:end -->";
+const SCENE_ASSET_BINDINGS_DOCUMENT = "场次资产表.md";
+const SCENE_ASSET_BINDINGS_MARKER_START = "<!-- workbench:scene-assets:start -->";
+const SCENE_ASSET_BINDINGS_MARKER_END = "<!-- workbench:scene-assets:end -->";
+const SCENE_ASSET_BINDINGS_PROJECTION_MARKER_START = "<!-- workbench:scene-assets:projection:start -->";
+const SCENE_ASSET_BINDINGS_PROJECTION_MARKER_END = "<!-- workbench:scene-assets:projection:end -->";
 const SHOT_CHARACTER_OVERRIDES_MARKER_START = "<!-- workbench:shot-character-overrides:start -->";
 const SHOT_CHARACTER_OVERRIDES_MARKER_END = "<!-- workbench:shot-character-overrides:end -->";
 const DEFAULT_CHARACTER_ROLE_CATEGORY: CharacterRoleCategory = "待分类";
@@ -1204,9 +1211,140 @@ function serializeSceneCastDocument(
   return `${[generated, preserved].filter(Boolean).join("\n\n").trimEnd()}\n`;
 }
 
+function parseSceneAssetBindings(markdown: string): { locations: SceneLocationBinding[]; props: ScenePropBinding[] } {
+  const matcher = new RegExp(
+    `${escapeRegExp(SCENE_ASSET_BINDINGS_MARKER_START)}\\s*([\\s\\S]*?)\\s*${escapeRegExp(SCENE_ASSET_BINDINGS_MARKER_END)}`,
+    "u",
+  );
+  const serialized = markdown.match(matcher)?.[1];
+  if (!serialized) return { locations: [], props: [] };
+  try {
+    const parsed: unknown = JSON.parse(serialized);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { locations: [], props: [] };
+    const raw = parsed as Record<string, unknown>;
+    const parse = <T extends SceneLocationBinding | ScenePropBinding>(value: unknown, key: "locationPath" | "propPath"): T[] => {
+      if (!Array.isArray(value)) return [];
+      return value.flatMap((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+        const item = entry as Record<string, unknown>;
+        if (typeof item[key] !== "string") return [];
+        return [{
+          [key]: item[key],
+          role: typeof item.role === "string" ? item.role : "",
+          state: typeof item.state === "string" ? item.state : "",
+          continuity: typeof item.continuity === "string" ? item.continuity : "",
+          startShotId: typeof item.startShotId === "string" ? item.startShotId : typeof item.start_shot_id === "string" ? item.start_shot_id : "",
+          endShotId: typeof item.endShotId === "string" ? item.endShotId : typeof item.end_shot_id === "string" ? item.end_shot_id : "",
+        } as T];
+      });
+    };
+    const directLocations = parse<SceneLocationBinding>(raw.locations, "locationPath");
+    const directProps = parse<ScenePropBinding>(raw.props, "propPath");
+    // Planner-generated sheets use one mixed `bindings` array and may use snake_case ranges.
+    const mixed = Array.isArray(raw.bindings) ? raw.bindings : [];
+    for (const entry of mixed) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const item = entry as Record<string, unknown>;
+      const type = item.type === "location" || item.type === "场景" ? "location" : item.type === "prop" || item.type === "道具" ? "prop" : "";
+      const assetPath = typeof item.locationPath === "string" ? item.locationPath : typeof item.propPath === "string" ? item.propPath : undefined;
+      if (!type || !assetPath) continue;
+      const normalized = {
+        [type === "location" ? "locationPath" : "propPath"]: assetPath,
+        role: typeof item.role === "string" ? item.role : "",
+        state: typeof item.state === "string" ? item.state : "",
+        continuity: typeof item.continuity === "string" ? item.continuity : "",
+        startShotId: typeof item.startShotId === "string" ? item.startShotId : typeof item.start_shot_id === "string" ? item.start_shot_id : "",
+        endShotId: typeof item.endShotId === "string" ? item.endShotId : typeof item.end_shot_id === "string" ? item.end_shot_id : "",
+      };
+      if (type === "location") directLocations.push(normalized as SceneLocationBinding);
+      else directProps.push(normalized as ScenePropBinding);
+    }
+    return { locations: directLocations, props: directProps };
+  } catch {
+    return { locations: [], props: [] };
+  }
+}
+
+function extractPreservedSceneAssetContent(markdown: string): string {
+  const withoutProjection = extractMarkedContent(
+    markdown,
+    SCENE_ASSET_BINDINGS_PROJECTION_MARKER_START,
+    SCENE_ASSET_BINDINGS_PROJECTION_MARKER_END,
+  ).remainder;
+  let remainder = extractMarkedContent(
+    withoutProjection,
+    SCENE_ASSET_BINDINGS_MARKER_START,
+    SCENE_ASSET_BINDINGS_MARKER_END,
+  ).remainder;
+  // Planner versions before the projection markers wrote the title, summary,
+  // and one combined table directly around the JSON marker. Do not preserve
+  // that generated projection when the user next saves a structured binding.
+  remainder = remainder
+    .replace(/^#\s+.*?场次资产表\s*(?:\r?\n|$)/mu, "")
+    .replace(/^\s*本表(?:定义|记录).*?(?:\r?\n|$)/mu, "");
+  const lines = remainder.split(/\r?\n/u);
+  const headers = [
+    "| 地点 | 角色 | 生效镜头 | 状态 | 连续性 |",
+    "| 道具 | 角色 | 生效镜头 | 状态 | 连续性 |",
+    "| 地点/道具 | 角色 | 生效镜头 | 状态 | 连续性 |",
+  ];
+  for (const header of headers) {
+    const index = lines.findIndex((line) => line.trim() === header);
+    if (index < 0 || !/^\|\s*---\s*\|\s*---\s*\|\s*---\s*\|\s*---\s*\|\s*---\s*\|\s*$/u.test(lines[index + 1]?.trim() || "")) continue;
+    let end = index + 2;
+    while (end < lines.length && lines[end].trim().startsWith("|")) end += 1;
+    lines.splice(index, end - index);
+  }
+  return lines.join("\n").trim();
+}
+
+function serializeSceneAssetBindingsDocument(
+  sceneId: string,
+  locations: readonly SceneLocationBinding[],
+  props: readonly ScenePropBinding[],
+  existingMarkdown?: string,
+): string {
+  const range = (binding: { startShotId: string; endShotId: string }) => binding.startShotId || binding.endShotId
+    ? `${binding.startShotId || "首镜"} - ${binding.endShotId || "尾镜"}` : "全场";
+  const rows = (items: readonly (SceneLocationBinding | ScenePropBinding)[], label: string, key: "locationPath" | "propPath") => [
+    `| ${label} | 角色 | 生效镜头 | 状态 | 连续性 |`,
+    "| --- | --- | --- | --- | --- |",
+    ...(items.length ? items.map((item) => `| ${escapeMarkdownTableCell(path.basename(item[key]))} | ${escapeMarkdownTableCell(item.role)} | ${range(item)} | ${escapeMarkdownTableCell(item.state)} | ${escapeMarkdownTableCell(item.continuity)} |`) : ["| 尚未配置 | — | — | — | — |"]),
+  ];
+  const generated = [
+    SCENE_ASSET_BINDINGS_PROJECTION_MARKER_START,
+    `# ${validateNewName(sceneId)} 场次资产表`,
+    "",
+    SCENE_ASSET_BINDINGS_MARKER_START,
+    JSON.stringify({ version: 1, locations, props }, null, 2),
+    SCENE_ASSET_BINDINGS_MARKER_END,
+    "",
+    "本表定义本场使用的地点与道具；镜头只记录临时状态覆盖。",
+    "",
+    ...rows(locations, "地点", "locationPath"),
+    "",
+    ...rows(props, "道具", "propPath"),
+    SCENE_ASSET_BINDINGS_PROJECTION_MARKER_END,
+  ].join("\n");
+  const preserved = existingMarkdown ? extractPreservedSceneAssetContent(existingMarkdown) : "";
+  return `${[generated, preserved].filter(Boolean).join("\n\n").trimEnd()}\n`;
+}
+
+function parseLegacySceneAssetReferences(markdown: string, locations: readonly LocationAsset[], props: readonly PropAsset[]): { locations: SceneLocationBinding[]; props: ScenePropBinding[] } {
+  const fields = parseBoldFields(markdown);
+  const parseNames = (...keys: string[]) => keys.flatMap((key) => (fields.get(key) || "").split(/[、,，;；|]/u)).map((item) => item.trim()).filter((item) => item && item !== "未指定");
+  const locationNames = parseNames("场景", "地点", "场景引用", "地点引用", "引用资产", "引用地点/道具", "地点与道具");
+  const propNames = parseNames("道具", "道具引用", "引用资产", "引用地点/道具", "地点与道具");
+  const locationBindings = locations.filter((asset) => locationNames.includes(asset.name)).map((asset) => ({ locationPath: asset.rootPath, role: "", state: "", continuity: "", startShotId: "", endShotId: "" }));
+  const propBindings = props.filter((asset) => propNames.includes(asset.name)).map((asset) => ({ propPath: asset.rootPath, role: "", state: "", continuity: "", startShotId: "", endShotId: "" }));
+  return { locations: locationBindings, props: propBindings };
+}
+
 async function buildSceneAssets(
   index: ProjectIndex,
   storedShots: readonly ShotAsset[],
+  locations: readonly LocationAsset[],
+  props: readonly PropAsset[],
 ): Promise<SceneAsset[]> {
   const sceneDirectories = index.directories.filter(
     (directory) => path.basename(path.dirname(directory.absolutePath)) === "分镜",
@@ -1217,8 +1355,14 @@ async function buildSceneAssets(
       .find((file) => file.name === "场次.md");
     const castFile = (index.filesByDirectory.get(directory.absolutePath) ?? [])
       .find((file) => file.name === SCENE_CAST_DOCUMENT);
+    const assetBindingsFile = (index.filesByDirectory.get(directory.absolutePath) ?? [])
+      .find((file) => file.name === SCENE_ASSET_BINDINGS_DOCUMENT);
     const sceneContent = sceneFile ? await readIndexedText(sceneFile) : "";
     const castContent = castFile ? await readIndexedText(castFile) : "";
+    const assetBindingsContent = assetBindingsFile ? await readIndexedText(assetBindingsFile) : "";
+    const parsedBindings = assetBindingsFile
+      ? parseSceneAssetBindings(assetBindingsContent)
+      : parseLegacySceneAssetReferences(sceneContent, locations, props);
     const sceneId = directory.name;
     const slots = readAssetSlots(directory.absolutePath, SCENE_SLOT_DEFINITIONS, index.filesByDirectory);
     const slotFiles = slots.flatMap((slot) => slot.files.map((file) =>
@@ -1240,12 +1384,17 @@ async function buildSceneAssets(
       ...(castFile ? { castPath: castFile.relativePath } : {}),
       castRevision: createTextRevision(castContent),
       castBindings: parseSceneCastBindings(castContent),
+      ...(assetBindingsFile ? { assetBindingsPath: assetBindingsFile.relativePath } : {}),
+      assetBindingsRevision: createTextRevision(assetBindingsContent),
+      locationBindings: parsedBindings.locations,
+      propBindings: parsedBindings.props,
       ...(sourcePath ? { sourcePath } : {}),
       slots,
       cover: pickCover(slots, ["final", "candidate", "video", "firstFrame", "lastFrame", "setting", "reference"]),
       updatedAt: latestUpdatedAt(directory, [
         ...(sceneFile ? [sceneFile] : []),
         ...(castFile ? [castFile] : []),
+        ...(assetBindingsFile ? [assetBindingsFile] : []),
         ...slotFiles,
       ]),
       shotCount: shots.length,
@@ -1320,7 +1469,7 @@ export async function getAssetWorkspaceSnapshot(): Promise<AssetWorkspaceSnapsho
     buildSimpleDocumentAssets(index, "道具", "道具设定.md", PROP_SLOT_DEFINITIONS, "prop"),
     buildStoredShotAssets(index),
   ]);
-  const scenes = await buildSceneAssets(index, storedShots);
+  const scenes = await buildSceneAssets(index, storedShots, locations as LocationAsset[], props as PropAsset[]);
   const storedKeys = new Set(storedShots.map((shot) => getShotIdentityKey(shot.design)));
   const draftKeys = new Set<string>();
   const drafts: ShotAsset[] = [];
@@ -1395,6 +1544,12 @@ async function readProjectJsonSnapshot(root: string): Promise<AssetWorkspaceSnap
       && (raw.projectIndex as Record<string, unknown>).chapters.length,
   );
   if (!(await projectJsonIsFresh(root, info.mtimeMs, hasStructuredIndex))) return undefined;
+  // Keep schema v1 caches readable after the scene asset relation fields were added.
+  for (const scene of raw.scenes as Array<Record<string, unknown>>) {
+    if (!Array.isArray(scene.locationBindings)) scene.locationBindings = [];
+    if (!Array.isArray(scene.propBindings)) scene.propBindings = [];
+    if (typeof scene.assetBindingsRevision !== "string") scene.assetBindingsRevision = createTextRevision("");
+  }
   return raw as unknown as AssetWorkspaceSnapshot;
 }
 
@@ -2241,6 +2396,22 @@ function assertCharacterIsNotReferenced(
   );
 }
 
+function assertSimpleAssetIsNotReferenced(
+  snapshot: AssetWorkspaceSnapshot,
+  asset: LocationAsset | PropAsset,
+  assetType: "location" | "prop",
+  action: string,
+): void {
+  const locations: string[] = [];
+  for (const scene of snapshot.scenes) {
+    const bindings = assetType === "location" ? scene.locationBindings ?? [] : scene.propBindings ?? [];
+    const pathKey = assetType === "location" ? "locationPath" : "propPath";
+    if (bindings.some((binding) => (binding as unknown as Record<string, unknown>)[pathKey] === asset.rootPath)) locations.push(`${scene.sceneId} 的场次资产表`);
+  }
+  if (!locations.length) return;
+  throw new ProjectPathError(`${assetType === "location" ? "地点/环境" : "道具"}“${asset.name}”已被 ${locations.slice(0, 3).join("、")}${locations.length > 3 ? ` 等 ${locations.length} 处` : ""}引用，暂不能${action}；请先在分镜中解除或替换这些引用。`);
+}
+
 function normalizeSceneRangeShotId(value: unknown, label: string): string {
   const text = validateOneLine(value, label, 120);
   if (!text) return "";
@@ -2325,6 +2496,65 @@ function validateSceneCastBindings(
     }
   }
   return normalized;
+}
+
+function validateSceneAssetBindings(
+  locations: unknown,
+  props: unknown,
+  snapshot: AssetWorkspaceSnapshot,
+  sceneId: string,
+): { locations: SceneLocationBinding[]; props: ScenePropBinding[] } {
+  const sceneShotIds = new Set(
+    snapshot.shots
+      .filter((shot) => !shot.isDraft && normalizeSceneIdentity(shot.design.sceneId) === normalizeSceneIdentity(sceneId))
+      .map((shot) => normalizeShotId(shot.design.shotId))
+      .filter((shotId): shotId is string => Boolean(shotId)),
+  );
+  const validate = <T extends SceneLocationBinding | ScenePropBinding>(items: unknown, key: "locationPath" | "propPath", label: string): T[] => {
+    if (!Array.isArray(items) || items.length > 120) throw new ProjectPathError("场次资产表最多只能包含 120 条绑定。");
+    const normalized = items.map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) throw new ProjectPathError("每条场次资产绑定必须是对象。");
+      const candidate = item as Record<string, unknown>;
+      const input = validateOneLine(candidate[key], `${label} path`, 500);
+      const safePath = assertVisibleProjectPath(input);
+      const found = key === "locationPath"
+        ? snapshot.locations.find((asset) => asset.rootPath === safePath)
+        : snapshot.props.find((asset) => asset.rootPath === safePath);
+      if (!found) throw new ProjectPathError(`${label} 必须属于当前项目的顶层资产目录。`);
+      const startShotId = normalizeSceneRangeShotId(candidate.startShotId, `${label} start shot`);
+      const endShotId = normalizeSceneRangeShotId(candidate.endShotId, `${label} end shot`);
+      if (startShotId && endShotId && shotNumber(startShotId, 0) > shotNumber(endShotId, 0)) {
+        throw new ProjectPathError(`${label} 绑定的结束镜号不能早于开始镜号。`);
+      }
+      if (startShotId && !sceneShotIds.has(startShotId)) {
+        throw new ProjectPathError(`${label} 绑定的起始镜号不属于当前场次。`);
+      }
+      if (endShotId && !sceneShotIds.has(endShotId)) {
+        throw new ProjectPathError(`${label} 绑定的结束镜号不属于当前场次。`);
+      }
+      return {
+        [key]: safePath,
+        role: validateOneLine(candidate.role, `${label} role`, 500),
+        state: validateOneLine(candidate.state, `${label} state`, 500),
+        continuity: validateOneLine(candidate.continuity, `${label} continuity`, 500),
+        startShotId,
+        endShotId,
+      } as T;
+    });
+    for (let index = 0; index < normalized.length; index += 1) {
+      for (let other = index + 1; other < normalized.length; other += 1) {
+        if ((normalized[index] as unknown as Record<string, unknown>)[key] === (normalized[other] as unknown as Record<string, unknown>)[key]
+          && doShotRangesOverlap(normalized[index] as SceneCastBinding, normalized[other] as SceneCastBinding)) {
+          throw new ProjectPathError(`同一${label}在重叠镜头范围内不能重复绑定。`);
+        }
+      }
+    }
+    return normalized;
+  };
+  return {
+    locations: validate<SceneLocationBinding>(locations, "locationPath", "地点"),
+    props: validate<ScenePropBinding>(props, "propPath", "道具"),
+  };
 }
 
 function validateResolvedShotCharacterOverrides(
@@ -2827,6 +3057,11 @@ async function ensureSceneAssetDirectory(
           serializeSceneCastDocument(safeSceneId, []),
           { flag: "wx" },
         );
+        await fs.writeFile(
+          path.join(temporary, SCENE_ASSET_BINDINGS_DOCUMENT),
+          serializeSceneAssetBindingsDocument(safeSceneId, [], []),
+          { flag: "wx" },
+        );
       },
     );
     return { directory, created: true };
@@ -2857,6 +3092,16 @@ async function ensureSceneAssetDirectory(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       await writeTextAtomically(castDocument, serializeSceneCastDocument(safeSceneId, []));
+    }
+    const assetBindingsDocument = path.join(directory, SCENE_ASSET_BINDINGS_DOCUMENT);
+    try {
+      const entry = await fs.lstat(assetBindingsDocument);
+      if (!entry.isFile() || entry.isSymbolicLink()) {
+        throw new ProjectPathError("The scene asset bindings document must be a regular file.");
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      await writeTextAtomically(assetBindingsDocument, serializeSceneAssetBindingsDocument(safeSceneId, [], []));
     }
   });
   return { directory, created: false };
@@ -3318,6 +3563,34 @@ export async function updateSceneCastBindings(
   return relativePath;
 }
 
+export async function updateSceneAssetBindings(
+  assetPath: string,
+  bindings: { locations: SceneLocationBinding[]; props: ScenePropBinding[] },
+  expectedRevision: string,
+): Promise<string> {
+  const asset = await getVerifiedWorkspaceAsset("scene", assetPath);
+  if (!asset.scene) throw new ProjectPathError("所选场次资产已不存在。");
+  const snapshot = await getAssetWorkspaceSnapshot();
+  const safeBindings = validateSceneAssetBindings(bindings?.locations, bindings?.props, snapshot, asset.scene.sceneId);
+  const target = path.join(await resolveMutableExistingPath(asset.scene.rootPath), SCENE_ASSET_BINDINGS_DOCUMENT);
+  await withDirectoryLock(path.dirname(target), async () => {
+    const currentContent = await readEditableTextOrEmpty(target);
+    assertCurrentTextRevision(expectedRevision, currentContent);
+    await writeTextAtomically(
+      target,
+      serializeSceneAssetBindingsDocument(asset.scene!.sceneId, safeBindings.locations, safeBindings.props, currentContent),
+    );
+  });
+  const relativePath = makeRelative(await getProjectRoot(), target);
+  await writeAudit({
+    action: "update-scene-asset-bindings",
+    path: relativePath,
+    locations: safeBindings.locations.map((binding) => binding.locationPath),
+    props: safeBindings.props.map((binding) => binding.propPath),
+  });
+  return relativePath;
+}
+
 function getCharacterVisualSlotDefinition(slotKey: CharacterVisualSlotKey): SlotDefinition {
   const definition = CHARACTER_SLOT_DEFINITIONS.find((slot) => slot.key === slotKey);
   if (!definition) {
@@ -3576,6 +3849,7 @@ export async function renameWorkspaceAsset(
     const safeName = validateNewName(name);
     if (safeName === path.basename(selected.rootPath)) return selected.rootPath;
     const snapshot = await getAssetWorkspaceSnapshot();
+    assertSimpleAssetIsNotReferenced(snapshot, selected, assetType, "重命名");
     const siblings = assetType === "location" ? snapshot.locations : snapshot.props;
     if (siblings.some((candidate) =>
       candidate.rootPath !== selected.rootPath
@@ -3674,6 +3948,9 @@ export async function trashWorkspaceAsset(
       asset.character,
       "移入回收站",
     );
+  }
+  if ((assetType === "location" && asset.location) || (assetType === "prop" && asset.prop)) {
+    assertSimpleAssetIsNotReferenced(await getAssetWorkspaceSnapshot(), assetType === "location" ? asset.location! : asset.prop!, assetType, "移入回收站");
   }
   return moveToTrash(asset.rootPath);
 }

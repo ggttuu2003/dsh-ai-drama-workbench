@@ -19,6 +19,10 @@ description: 将用户提供的小说或剧本片段拆解为 AI 漫剧项目中
 
 计划字段必须包含：`title`、`summary`、`new_characters`、`look_additions`、`reuse_characters`、`new_locations`、`reuse_locations`、`new_props`、`reuse_props`、`new_scenes`、`reuse_scenes`、`notes`。
 
-场次下要提供 `scene_id`、`title`、`summary`、`character_refs`、`location_refs`、`prop_refs`、`cast`、`shots`。每个镜头要提供 `id`、`title`、`content`，并补齐时间码、景别、运镜、台词、提示词、参考资产和状态；人物造型覆盖必须使用 `inherit`、`identity` 或 `look`。
+采用双层模型：分镜/场次是生产主轴，人物、地点、道具是项目级可复用主档；场次只保存对这些主档的结构化引用和本场状态。顶层目录仍为 `主要人物/场景/道具/分镜`。
+
+场次下要提供 `scene_id`、`title`、`summary`、`character_refs`、`location_refs`、`prop_refs`、`cast`、`shots`；推荐同时提供 `location_bindings` 和 `prop_bindings`。绑定可使用资产名称（服务端会解析为精确项目相对路径），字段分别为 `location`/`prop`、`role`、`state`、`continuity`、`start_shot_id`、`end_shot_id`。旧计划只给 refs 也兼容，会自动生成全场默认绑定。每个镜头要提供 `id`、`title`、`content`，并补齐时间码、景别、运镜、台词、提示词、参考资产和状态；人物造型覆盖必须使用 `inherit`、`identity` 或 `look`。
+
+提案写入每个新场次的 `场次资产表.md`，其中包含 `workbench:scene-assets` marker JSON 和人类可读表格；`场次.md` 仍保留“引用资产”文字，便于人工阅读。
 
 已有资产放入对应的 `reuse_*`，不能放进 `new_*` 以覆盖。一个片段若只产生新人物或道具，也可以单独形成提案；若没有任何新资产或新增 LOOK，则不创建空提案。

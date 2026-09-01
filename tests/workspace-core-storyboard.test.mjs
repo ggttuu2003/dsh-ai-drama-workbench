@@ -1,12 +1,19 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
 import {
+  createLocationAsset,
+  createPropAsset,
+  createSceneAsset,
+  createShotAsset,
   getAssetWorkspaceSnapshot,
   importStoryboardDrafts,
+  renameWorkspaceAsset,
+  trashWorkspaceAsset,
+  updateSceneAssetBindings,
   withProjectRoot,
 } from '../lib/workspace-core.js'
 
@@ -123,6 +130,160 @@ test('single-scene storyboard import keeps the existing bare SH001 selector beha
     assert.equal(stored?.design.shotId, 'SH001')
     assert.equal(stored?.design.title, '单场标题')
     assert.equal(stored?.sourcePath, sourcePath)
+  } finally {
+    await rm(temporary, { recursive: true, force: true })
+  }
+})
+
+test('scene asset bindings are created, persisted, validated, and protect referenced reusable assets', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'dsh-ai-drama-scene-asset-bindings-'))
+  const root = await realpath(temporary)
+
+  try {
+    await withProjectRoot(root, async () => {
+      const locationPath = await createLocationAsset('雨夜巷道')
+      const propPath = await createPropAsset('铜钥匙')
+      const scenePath = await createSceneAsset('EP001-SC001')
+      await createShotAsset('EP001-SC001', 'SH001', '巷口建立')
+      await createShotAsset('EP001-SC001', 'SH002', '钥匙特写')
+
+      const assetSheetPath = '分镜/EP001-SC001/场次资产表.md'
+      const initialSheet = await readFile(path.join(root, ...assetSheetPath.split('/')), 'utf8')
+      assert.match(initialSheet, /workbench:scene-assets:start/u)
+      assert.match(initialSheet, /"locations": \[\]/u)
+      assert.match(initialSheet, /"props": \[\]/u)
+
+      const initial = await getAssetWorkspaceSnapshot()
+      const initialScene = initial.scenes.find(scene => scene.rootPath === scenePath)
+      assert.ok(initialScene)
+      assert.equal(initialScene?.assetBindingsPath, assetSheetPath)
+      assert.deepEqual(initialScene?.locationBindings, [])
+      assert.deepEqual(initialScene?.propBindings, [])
+
+      const bindings = {
+        locations: [{
+          locationPath,
+          role: '主要行动空间',
+          state: '夜雨积水',
+          continuity: '站牌缺角保持可见',
+          startShotId: 'SH001',
+          endShotId: 'SH002',
+        }],
+        props: [{
+          propPath,
+          role: '关键线索',
+          state: '被雨水打湿',
+          continuity: '始终握在主角右手',
+          startShotId: '',
+          endShotId: '',
+        }],
+      }
+      const saved = await updateSceneAssetBindings(scenePath, bindings, initialScene.assetBindingsRevision)
+      assert.equal(saved, assetSheetPath)
+
+      const persisted = await getAssetWorkspaceSnapshot()
+      const persistedScene = persisted.scenes.find(scene => scene.rootPath === scenePath)
+      assert.ok(persistedScene)
+      assert.deepEqual(persistedScene?.locationBindings, bindings.locations)
+      assert.deepEqual(persistedScene?.propBindings, bindings.props)
+      const persistedSheet = await readFile(path.join(root, ...assetSheetPath.split('/')), 'utf8')
+      assert.match(persistedSheet, /"locationPath": "场景\/雨夜巷道"/u)
+      assert.match(persistedSheet, /"propPath": "道具\/铜钥匙"/u)
+
+      const revision = persistedScene.assetBindingsRevision
+      await assert.rejects(
+        () => updateSceneAssetBindings(scenePath, {
+          locations: [{ ...bindings.locations[0], locationPath: '场景/不存在的地点' }],
+          props: [],
+        }, revision),
+        /地点.*当前项目/u,
+      )
+      await assert.rejects(
+        () => updateSceneAssetBindings(scenePath, {
+          locations: [{ ...bindings.locations[0], startShotId: 'SH002', endShotId: 'SH001' }],
+          props: [],
+        }, revision),
+        /结束镜号/u,
+      )
+      await assert.rejects(
+        () => updateSceneAssetBindings(scenePath, {
+          locations: [{ ...bindings.locations[0], startShotId: 'SH003', endShotId: '' }],
+          props: [],
+        }, revision),
+        /起始镜号不属于当前场次/u,
+      )
+      await assert.rejects(
+        () => updateSceneAssetBindings(scenePath, {
+          locations: [
+            { ...bindings.locations[0], startShotId: 'SH001', endShotId: 'SH001' },
+            { ...bindings.locations[0], startShotId: 'SH001', endShotId: 'SH002' },
+          ],
+          props: [],
+        }, revision),
+        /重叠镜头范围/u,
+      )
+
+      await assert.rejects(
+        () => renameWorkspaceAsset('location', locationPath, '新巷道'),
+        /暂不能重命名/u,
+      )
+      await assert.rejects(
+        () => trashWorkspaceAsset('location', locationPath),
+        /暂不能移入回收站/u,
+      )
+      await assert.rejects(
+        () => renameWorkspaceAsset('prop', propPath, '新钥匙'),
+        /暂不能重命名/u,
+      )
+      await assert.rejects(
+        () => trashWorkspaceAsset('prop', propPath),
+        /暂不能移入回收站/u,
+      )
+    })
+  } finally {
+    await rm(temporary, { recursive: true, force: true })
+  }
+})
+
+test('legacy scene Markdown maps separate people, location, and prop fields to reusable asset bindings', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'dsh-ai-drama-legacy-scene-bindings-'))
+  const root = await realpath(temporary)
+
+  try {
+    await withProjectRoot(root, async () => {
+      const locationPath = await createLocationAsset('旧城门')
+      const propPath = await createPropAsset('旧钥匙')
+      const sceneDirectory = path.join(root, '分镜', 'EP099-SC001')
+      await mkdir(sceneDirectory, { recursive: true })
+      await writeFile(path.join(sceneDirectory, '场次.md'), [
+        '# EP099-SC001 场次设定',
+        '',
+        '- **人物：** 沈砚',
+        '- **场景：** 旧城门',
+        '- **道具：** 旧钥匙',
+        '',
+      ].join('\n'), 'utf8')
+
+      const snapshot = await getAssetWorkspaceSnapshot()
+      const scene = snapshot.scenes.find(asset => asset.sceneId === 'EP099-SC001')
+      assert.equal(scene?.assetBindingsPath, undefined)
+      assert.deepEqual(scene?.locationBindings, [{
+        locationPath,
+        role: '',
+        state: '',
+        continuity: '',
+        startShotId: '',
+        endShotId: '',
+      }])
+      assert.deepEqual(scene?.propBindings, [{
+        propPath,
+        role: '',
+        state: '',
+        continuity: '',
+        startShotId: '',
+        endShotId: '',
+      }])
+    })
   } finally {
     await rm(temporary, { recursive: true, force: true })
   }

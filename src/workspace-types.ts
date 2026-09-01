@@ -91,6 +91,26 @@ export interface SceneCastBinding {
   endShotId: string;
 }
 
+/** A reusable location referenced by a scene, optionally limited to a shot range. */
+export interface SceneLocationBinding {
+  locationPath: string;
+  role: string;
+  state: string;
+  continuity: string;
+  startShotId: string;
+  endShotId: string;
+}
+
+/** A reusable prop referenced by a scene, optionally limited to a shot range. */
+export interface ScenePropBinding {
+  propPath: string;
+  role: string;
+  state: string;
+  continuity: string;
+  startShotId: string;
+  endShotId: string;
+}
+
 export type ShotCharacterOverrideMode = "inherit" | "identity" | "look";
 
 /** A shot-specific exception to the scene-level character and costume plan. */
@@ -115,6 +135,11 @@ export interface SceneAsset {
   castPath?: string;
   castRevision: string;
   castBindings: SceneCastBinding[];
+  /** Human-readable scene asset sheet with structured location/prop bindings. */
+  assetBindingsPath?: string;
+  assetBindingsRevision: string;
+  locationBindings: SceneLocationBinding[];
+  propBindings: ScenePropBinding[];
   sourcePath?: string;
   slots: AssetSlot[];
   cover?: AssetFile;

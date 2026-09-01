@@ -211,6 +211,75 @@ test('scene and prop asset APIs create standard folders, expose snapshots, and p
   }
 })
 
+test('scene asset bindings API persists project-level locations and props on the scene container', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'dsh-ai-drama-scene-asset-bindings-api-'))
+  const root = await realpath(temporaryRoot)
+  const state = { root: async () => root }
+
+  try {
+    const location = await call(state, jsonRequest({ action: 'createLocation', name: '雨夜巷道' }), 'http://127.0.0.1/ai-drama/workbench/assets')
+    const prop = await call(state, jsonRequest({ action: 'createProp', name: '铜钥匙' }), 'http://127.0.0.1/ai-drama/workbench/assets')
+    const scene = await call(state, jsonRequest({ action: 'createScene', sceneId: 'EP001-SC010' }), 'http://127.0.0.1/ai-drama/workbench/assets')
+    assert.equal(location.status, 200)
+    assert.equal(prop.status, 200)
+    assert.equal(scene.status, 200)
+    await call(state, jsonRequest({ action: 'createShot', sceneId: 'EP001-SC010', shotId: 'SH001', title: '巷口建立' }), 'http://127.0.0.1/ai-drama/workbench/assets')
+    await call(state, jsonRequest({ action: 'createShot', sceneId: 'EP001-SC010', shotId: 'SH002', title: '线索特写' }), 'http://127.0.0.1/ai-drama/workbench/assets')
+
+    const before = await call(state, getRequest(), 'http://127.0.0.1/ai-drama/workbench/project')
+    const beforeScene = before.payload.scenes.find(asset => asset.rootPath === scene.payload.path)
+    assert.ok(beforeScene)
+    assert.equal(beforeScene.assetBindingsPath, '分镜/EP001-SC010/场次资产表.md')
+
+    const bindings = {
+      locations: [{
+        locationPath: location.payload.path,
+        role: '主要行动空间',
+        state: '夜雨积水',
+        continuity: '地面积水保持一致',
+        startShotId: 'SH001',
+        endShotId: 'SH002',
+      }],
+      props: [{
+        propPath: prop.payload.path,
+        role: '关键线索',
+        state: '湿润',
+        continuity: '始终握在右手',
+        startShotId: '',
+        endShotId: '',
+      }],
+    }
+    const saved = await call(state, jsonRequest({
+      action: 'updateSceneAssetBindings',
+      assetPath: scene.payload.path,
+      bindings,
+      expectedRevision: beforeScene.assetBindingsRevision,
+    }), 'http://127.0.0.1/ai-drama/workbench/assets')
+    assert.equal(saved.status, 200)
+    assert.equal(saved.payload.path, '分镜/EP001-SC010/场次资产表.md')
+
+    const after = await call(state, getRequest(), 'http://127.0.0.1/ai-drama/workbench/project')
+    const afterScene = after.payload.scenes.find(asset => asset.rootPath === scene.payload.path)
+    assert.ok(afterScene)
+    assert.deepEqual(afterScene.locationBindings, bindings.locations)
+    assert.deepEqual(afterScene.propBindings, bindings.props)
+
+    const missingAsset = await call(state, jsonRequest({
+      action: 'updateSceneAssetBindings',
+      assetPath: scene.payload.path,
+      bindings: {
+        locations: [{ ...bindings.locations[0], locationPath: '场景/不存在的地点' }],
+        props: [],
+      },
+      expectedRevision: afterScene.assetBindingsRevision,
+    }), 'http://127.0.0.1/ai-drama/workbench/assets')
+    assert.equal(missingAsset.status, 400)
+    assert.match(missingAsset.payload.error, /地点.*当前项目/u)
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true })
+  }
+})
+
 test('upload API rejects invalid MIME, extension, and declared sizes without publishing partial assets', async () => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'dsh-ai-drama-workbench-upload-api-'))
   const root = await realpath(temporaryRoot)
