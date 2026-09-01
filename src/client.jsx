@@ -253,7 +253,7 @@ function SshSettings({ connection, error, busy, onClose, onRefresh, onSave, onSt
       </div>
       <p className="adw-ssh-secret-note">此连接仅使用 SSH 密码认证，已禁用公钥、SSH agent 和复用连接。密码不会写入配置文件或返回给页面。</p>
       {error ? <p className="adw-ssh-error" role="alert">{error}</p> : null}
-      <div className="adw-ssh-actions"><button disabled={busy} onClick={onRefresh} type="button">刷新状态</button><button disabled={busy} onClick={save} type="button">保存设置</button>{connected ? <button className="is-danger" disabled={busy} onClick={onStop} type="button">断开连接</button> : <button className="is-primary" disabled={busy || !draft.host || !draft.user || !password} onClick={start} type="button">启动连接</button>}</div>
+      <div className="adw-ssh-actions"><button disabled={busy} onClick={onRefresh} type="button">刷新状态</button><button disabled={busy} onClick={save} type="button">保存设置</button>{connected ? <button className="is-danger" disabled={busy} onClick={onStop} type="button">断开连接</button> : connection?.status?.state === 'error' || connection?.status?.state === 'connecting' ? <button className="is-danger" disabled={busy} onClick={onStop} type="button">重置连接</button> : <button className="is-primary" disabled={busy || !draft.host || !draft.user || !password} onClick={start} type="button">启动连接</button>}</div>
     </section>
   </div>
 }

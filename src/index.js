@@ -303,6 +303,7 @@ async function stopSshTunnel() {
     sshProcess = null
   }
   cleanupSshAskpass()
+  sshProcessError = ''
   return sshPublicConfig(await readSshConfig(), await getSshStatus())
 }
 
