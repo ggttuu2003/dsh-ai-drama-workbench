@@ -219,7 +219,20 @@ async function startSshTunnel(rawConfig) {
   const password = sshPassword(input.password)
   if (sshProcess && !sshProcess.killed) {
     const saved = await writeSshConfig(config)
-    return sshPublicConfig(saved, await getSshStatus(saved))
+    let status = await getSshStatus(saved)
+    if (status.state === 'error' && status.label === 'Bridge 异常') {
+      const askpass = await createSshAskpass()
+      const environment = { ...process.env, SSH_ASKPASS: askpass.path, SSH_ASKPASS_REQUIRE: 'force', DISPLAY: process.env.DISPLAY || ':0', [SSH_PASSWORD_ENV]: password }
+      try {
+        await runRemoteBridgeStart(saved, environment)
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          await new Promise(resolve => setTimeout(resolve, 500))
+          status = await getSshStatus(saved)
+          if (status.state === 'connected') break
+        }
+      } finally { await askpass.cleanup() }
+    }
+    return sshPublicConfig(saved, status)
   }
   const saved = await writeSshConfig(config)
   const destination = `${config.user}@${config.host}`
