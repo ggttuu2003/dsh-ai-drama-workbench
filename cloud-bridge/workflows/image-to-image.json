@@ -1,0 +1,79 @@
+{
+  "id": "image-to-image",
+  "name": "Z-Image Turbo 图生图",
+  "kind": "image",
+  "description": "调用 api-workflows/image-to-image.api.json。上传一张已选参考图，缩放到目标镜头画幅后通过 VAEEncode 和可调 denoise 生成首帧或尾帧。",
+  "enabled": true,
+  "comfyPromptFile": "image-to-image.api.json",
+  "inputMappings": {
+    "prompt": {
+      "nodeId": "4",
+      "field": "text",
+      "type": "string",
+      "required": true,
+      "maxLength": 20000,
+      "description": "正向提示词"
+    },
+    "negativePrompt": {
+      "nodeId": "9",
+      "field": "text",
+      "type": "string",
+      "required": false,
+      "maxLength": 20000,
+      "description": "负向提示词"
+    },
+    "width": {
+      "nodeId": "19",
+      "field": "width",
+      "type": "integer",
+      "required": false,
+      "min": 256,
+      "max": 2048,
+      "description": "图生图工作分辨率宽度"
+    },
+    "height": {
+      "nodeId": "19",
+      "field": "height",
+      "type": "integer",
+      "required": false,
+      "min": 256,
+      "max": 2048,
+      "description": "图生图工作分辨率高度"
+    },
+    "seed": {
+      "nodeId": "6",
+      "field": "seed",
+      "type": "integer",
+      "required": false,
+      "min": 0,
+      "max": 2147483647,
+      "description": "随机种子"
+    },
+    "denoise": {
+      "nodeId": "6",
+      "field": "denoise",
+      "type": "number",
+      "required": false,
+      "min": 0,
+      "max": 1,
+      "description": "重绘强度；越低越接近输入图"
+    }
+  },
+  "uploadMappings": {
+    "referenceImage": {
+      "nodeId": "18",
+      "field": "image",
+      "required": true,
+      "acceptedExtensions": [
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp"
+      ],
+      "description": "图生图输入；注入 LoadImage 节点 18"
+    }
+  },
+  "outputNodeIds": [
+    "17"
+  ]
+}

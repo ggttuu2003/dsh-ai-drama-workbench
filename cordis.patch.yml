@@ -1,0 +1,9 @@
+# 保留官方 ui-layout：工作台通过 shell.overlay 覆盖层打开，避免接管原生侧栏、
+# 会话、设置和会话生命周期。用户仍可随时退回普通 Harness 界面。
+- insert:
+    - id: ai-drama-workbench
+      name: dsh-ai-drama-workbench
+      config:
+        defaultProjectPath: ''
+        # 受信任的项目库根目录；工作台只能在其一级子目录中切换或创建项目。
+        projectLibraryPath: ''

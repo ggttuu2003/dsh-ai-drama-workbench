@@ -1,0 +1,7 @@
+interface:
+  display_name: "小说漫剧资产拆解"
+  short_description: "把小说片段整理为完整漫剧资产 Markdown"
+  default_prompt: "使用 $novel-to-drama-assets 将这段小说按项目名拆解为漫剧资产。"
+
+policy:
+  allow_implicit_invocation: true

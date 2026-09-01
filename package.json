@@ -1,0 +1,52 @@
+{
+  "name": "dsh-ai-drama-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DeepSeek Harness 的本地 AI 漫剧资产与安全提案工作台",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/",
+    "skills/",
+    "engine/",
+    "cloud-bridge/",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node ./scripts/build.mjs",
+    "prepare": "pnpm run build",
+    "pretest": "pnpm run build",
+    "test": "node --test ./tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-layout"
+      ],
+      "external": [
+        "react"
+      ]
+    }
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "id": "video-first-last",
+  "name": "MiniMax H3 首尾帧视频",
+  "kind": "video",
+  "description": "调用 api-workflows/video-first-last.api.json 中从 ComfyUI 导出的 MiniMax H3 首尾帧工作流。首帧和尾帧会分别上传到工作流的两个 LoadImage 节点，最终视频从 SaveVideo 节点下载。",
+  "enabled": true,
+  "comfyPromptFile": "video-first-last.api.json",
+  "inputMappings": {
+    "prompt": {
+      "nodeId": "140:131",
+      "field": "prompt",
+      "type": "string",
+      "required": true,
+      "maxLength": 20000,
+      "description": "运动与画面提示词"
+    },
+    "seed": {
+      "nodeId": "140:129",
+      "field": "noise_seed",
+      "type": "integer",
+      "required": false,
+      "min": 0,
+      "max": 9007199254740991,
+      "description": "随机种子"
+    },
+    "durationSeconds": {
+      "nodeId": "140:133",
+      "field": "value",
+      "type": "number",
+      "required": false,
+      "min": 1,
+      "max": 60,
+      "description": "视频时长（秒）；原工作流会按 24 fps 自动对齐到 17k+5 帧"
+    }
+  },
+  "uploadMappings": {
+    "firstFrame": {
+      "nodeId": "141",
+      "field": "image",
+      "required": true,
+      "acceptedExtensions": [
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp"
+      ],
+      "description": "首帧图片；注入 LoadImage 节点 141"
+    },
+    "lastFrame": {
+      "nodeId": "142",
+      "field": "image",
+      "required": true,
+      "acceptedExtensions": [
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp"
+      ],
+      "description": "尾帧图片；注入 LoadImage 节点 142"
+    }
+  },
+  "outputNodeIds": [
+    "92"
+  ]
+}

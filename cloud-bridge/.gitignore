@@ -1,0 +1,5 @@
+.env
+data/
+api-workflows/*.api.json
+__pycache__/
+*.pyc

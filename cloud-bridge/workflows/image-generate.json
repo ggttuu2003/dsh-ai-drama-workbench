@@ -1,0 +1,57 @@
+{
+  "id": "image-generate",
+  "name": "文生图（我的 ComfyUI 工作流）",
+  "kind": "image",
+  "description": "调用 api-workflows/image-generate.api.json 中用户从 ComfyUI 导出的原始 API 工作流。",
+  "enabled": true,
+  "comfyPromptFile": "image-generate.api.json",
+  "inputMappings": {
+    "prompt": {
+      "nodeId": "4",
+      "field": "text",
+      "type": "string",
+      "required": true,
+      "maxLength": 20000,
+      "description": "正向提示词"
+    },
+    "negativePrompt": {
+      "nodeId": "9",
+      "field": "text",
+      "type": "string",
+      "required": false,
+      "maxLength": 20000,
+      "description": "负向提示词"
+    },
+    "width": {
+      "nodeId": "10",
+      "field": "width",
+      "type": "integer",
+      "required": false,
+      "min": 256,
+      "max": 2048,
+      "description": "输出宽度"
+    },
+    "height": {
+      "nodeId": "10",
+      "field": "height",
+      "type": "integer",
+      "required": false,
+      "min": 256,
+      "max": 2048,
+      "description": "输出高度"
+    },
+    "seed": {
+      "nodeId": "6",
+      "field": "seed",
+      "type": "integer",
+      "required": false,
+      "min": 0,
+      "max": 2147483647,
+      "description": "随机种子"
+    }
+  },
+  "uploadMappings": {},
+  "outputNodeIds": [
+    "17"
+  ]
+}

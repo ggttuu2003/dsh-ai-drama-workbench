@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build and test output
+dist/
+coverage/
+*.log
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Operating system and editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Python cache and local runtime data
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local workbench/runtime state
+.workbench/
