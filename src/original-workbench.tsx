@@ -160,6 +160,15 @@ function selectedSlotVisual(slot: AssetSlot): AssetFile | undefined {
   return selectedSlotVisualFiles(slot)[0];
 }
 
+function assetSlot(asset: { slots: AssetSlot[] }, key: string): AssetSlot | undefined {
+  return asset.slots.find((slot) => slot.key === key);
+}
+
+function hasSingleSelectedSlotVisual(asset: { slots: AssetSlot[] }, key: string): boolean {
+  const slot = assetSlot(asset, key);
+  return Boolean(slot && selectedSlotVisualFiles(slot).length === 1);
+}
+
 function isCharacterVisualSlotKey(slotKey: string): slotKey is CharacterVisualSlotKey {
   return slotKey === "turnaround" || slotKey === "costume" || slotKey === "reference";
 }
@@ -273,7 +282,17 @@ function shotNumericValue(shotId: string): number | undefined {
   return match ? Number.parseInt(match[1], 10) : undefined;
 }
 
-function bindingAppliesToShot(binding: SceneCastBinding, shotId: string): boolean {
+function shotDurationSeconds(value: string): string | undefined {
+  const match = value.trim().match(/^(\d+(?:\.\d+)?)\s*(?:秒(?:钟)?|s(?:ec(?:onds?)?)?)?$/iu);
+  if (!match) return undefined;
+  const seconds = Number(match[1]);
+  return Number.isFinite(seconds) && seconds >= 1 && seconds <= 60 ? String(seconds) : undefined;
+}
+
+function bindingAppliesToShot(
+  binding: Pick<SceneCastBinding, "startShotId" | "endShotId">,
+  shotId: string,
+): boolean {
   const current = shotNumericValue(shotId);
   if (current === undefined) return !binding.startShotId && !binding.endShotId;
   const start = binding.startShotId ? shotNumericValue(binding.startShotId) : undefined;
@@ -560,31 +579,66 @@ function SceneAssetCard({
   );
 }
 
-type WorkflowNode = {
+type ShotWorkflowStepId = "design" | "reference" | "firstFrame" | "lastFrame" | "video";
+
+type ShotWorkflowNode = {
+  id: ShotWorkflowStepId;
   label: string;
   state: "done" | "current" | "pending";
 };
 
-function StoryboardWorkflow({
+function ShotWorkflowStepper({
+  activeStep,
+  disabled = false,
   nodes,
   onSelect,
 }: {
-  nodes: WorkflowNode[];
-  onSelect: (index: number) => void;
+  activeStep: ShotWorkflowStepId;
+  disabled?: boolean;
+  nodes: ShotWorkflowNode[];
+  onSelect: (step: ShotWorkflowStepId) => void | Promise<void>;
 }) {
-  return (
-    <nav aria-label="分镜制作流程" className="storyboard-workflow">
-      {nodes.map((node, index) => (
-        <React.Fragment key={node.label}>
-          <button className={`storyboard-workflow-node is-${node.state}`} onClick={() => onSelect(index)} type="button">
-            <span className="storyboard-workflow-index">{node.state === "done" ? "✓" : String(index + 1).padStart(2, "0")}</span>
-            <span>{node.label}</span>
-          </button>
-          {index < nodes.length - 1 ? <span aria-hidden="true" className={`storyboard-workflow-line ${node.state === "done" ? "is-done" : ""}`} /> : null}
-        </React.Fragment>
-      ))}
-    </nav>
-  );
+  return <nav aria-label="当前镜头制作流程" className="storyboard-stepper">
+    {nodes.map((node, index) => <button
+      aria-current={activeStep === node.id ? "step" : undefined}
+      className={`storyboard-step is-${node.state}`}
+      disabled={disabled}
+      key={node.id}
+      onClick={() => onSelect(node.id)}
+      type="button"
+    >
+      <span className="storyboard-step-index">{node.state === "done" ? "✓" : String(index + 1).padStart(2, "0")}</span>
+      <span className="storyboard-step-copy"><strong>{node.label}</strong></span>
+    </button>)}
+  </nav>;
+}
+
+function WorkflowFramePreview({
+  file,
+  label,
+  onPreview,
+}: {
+  file?: AssetFile;
+  label: string;
+  onPreview: (file: AssetFile) => void;
+}) {
+  return <article className={`workflow-frame-preview ${file ? "has-file" : ""}`}>
+    <p className="eyebrow">{label}</p>
+    {file && isImage(file) ? <button aria-label={`查看${label}`} onClick={() => onPreview(file)} type="button"><img alt={label} src={mediaUrl(file)} /></button> : <div className="workflow-frame-empty">未选择</div>}
+    <strong title={file?.name}>{file ? displaySelectedVisualName(file.name) : label}</strong>
+  </article>;
+}
+
+function WorkflowStepFooter({
+  disabled,
+  label,
+  onClick,
+}: {
+  disabled?: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return <footer className="workflow-step-footer"><button className="submit-button" disabled={disabled} onClick={onClick} type="button">{label}</button></footer>;
 }
 
 function SlotPanel({
@@ -620,6 +674,7 @@ function SlotPanel({
   const effectiveConfirmedSourcePath = effectiveConfirmedFile?.path;
   const candidateCountLabel = `${selectionCandidates.length} 张候选`;
   const confirmedName = effectiveConfirmedFile?.name;
+  const selectionAction = slot.key === "firstFrame" || slot.key === "lastFrame" ? "设为已选" : "设为参考";
   const uploadLabel = canConfirmSelection
     ? visualFiles.length ? "继续添加候选" : `添加${slot.label}候选`
     : `添加${slot.label}`;
@@ -666,12 +721,12 @@ function SlotPanel({
                   <small>{formatSize(file.size)}</small>
                 </div>
                 {canConfirmSelection && isImage(file) ? <button
-                  aria-label={hasSelectionConflict ? `将 ${file.name} 作为唯一${slot.label}参考，并恢复同槽其他已选候选` : isConfirmed ? `${file.name} 是当前选择` : `将 ${file.name} 设为当前${slot.label}参考`}
+                  aria-label={hasSelectionConflict ? `将 ${file.name} 作为唯一${slot.label}${selectionAction === "设为已选" ? "已选图" : "参考"}，并恢复同槽其他已选候选` : isConfirmed ? `${file.name} 是当前选择` : `将 ${file.name} ${selectionAction}`}
                   className={`asset-file-confirm ${isConfirmed ? "is-confirmed" : ""}`}
                   disabled={disabled || isConfirmed}
                   onClick={() => onSetConfirmed?.(file)}
                   type="button"
-                >{hasSelectionConflict ? "统一选此图" : isConfirmed ? "当前选择" : "设为参考"}</button> : null}
+                >{hasSelectionConflict ? "统一选此图" : isConfirmed ? "当前选择" : selectionAction}</button> : null}
                 <button
                   aria-label={isConfirmed || isMarkedSelected ? `${file.name} 带有已选标记，请先选择另一张候选图或统一资料槽状态` : `将 ${file.name} 移入回收站`}
                   className="asset-file-remove"
@@ -1333,6 +1388,33 @@ function DraftSummary({ design }: { design: ShotDesign }) {
   );
 }
 
+function ShotDesignPreview({ design }: { design: ShotDesign }) {
+  const primaryText = design.content.trim() || design.prompt.trim();
+  const textBlocks = [
+    ["台词", design.dialogue],
+    ["运镜", design.camera],
+    ["提示词", design.prompt && design.prompt.trim() !== primaryText ? design.prompt : ""],
+    ["人物备注", design.references],
+  ] as const;
+  const meta = [
+    ["时码", design.timecode],
+    ["时长", design.duration],
+    ["景别 / 机位", design.framing],
+  ] as const;
+  return <div aria-label="镜头设计预览" className="shot-design-preview">
+    <div className="shot-design-preview-main">
+      <span className="shot-design-preview-label">画面描述</span>
+      <p>{primaryText || "暂无镜头描述"}</p>
+    </div>
+    <dl className="shot-design-preview-meta">
+      {meta.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || "未填写"}</dd></div>)}
+    </dl>
+    {textBlocks.some(([, value]) => value.trim()) ? <div className="shot-design-preview-notes">
+      {textBlocks.map(([label, value]) => value.trim() ? <div key={label}><span>{label}</span><p>{value}</p></div> : null)}
+    </div> : null}
+  </div>;
+}
+
 type ComfyProfile = {
   id: string;
   name: string;
@@ -1403,6 +1485,8 @@ function formatComfyJobDetail(job: ComfyJob): string {
 
 function GenerationModal({
   asset,
+  initialDurationSeconds,
+  initialPresetId,
   lookPath,
   projectId,
   onClose,
@@ -1410,6 +1494,8 @@ function GenerationModal({
   onQueued,
 }: {
   asset: WorkspaceSelectionAsset;
+  initialDurationSeconds?: string;
+  initialPresetId?: string;
   lookPath?: string;
   projectId?: string;
   onClose: () => void;
@@ -1436,7 +1522,12 @@ function GenerationModal({
   const [durationSeconds, setDurationSeconds] = useState("5");
   const assetPath = asset.rootPath;
   const availablePresets = presets.filter((preset) => preset.assetTypes.includes(asset.type));
-  const activePreset = availablePresets.find((preset) => preset.id === presetId) ?? availablePresets[0];
+  // A workflow opened from a shot step is intentionally locked. If the
+  // server does not expose that preset, keep the modal unavailable instead
+  // of silently falling back to an unrelated workflow.
+  const activePreset = initialPresetId
+    ? availablePresets.find((preset) => preset.id === initialPresetId)
+    : availablePresets.find((preset) => preset.id === presetId) ?? availablePresets[0];
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId);
 
   useEffect(() => {
@@ -1474,23 +1565,29 @@ function GenerationModal({
       setJobs(jobResponse.jobs);
       onJobsObserved(assetPath, jobResponse.jobs);
       const matching = presetResponse.presets.filter((preset) => preset.assetTypes.includes(asset.type));
-      const next = matching.find((preset) => preset.id === presetId) ?? matching[0];
-      if (next) {
-        setPresetId(next.id);
-        setWidth(String(next.defaults?.width ?? 1024));
-        setHeight(String(next.defaults?.height ?? 1024));
-        setSeed(next.defaults?.seed === undefined ? "" : String(next.defaults.seed));
-        setDenoise(String(next.defaults?.denoise ?? 0.65));
-        setFrames(String(next.defaults?.frames ?? 121));
-        setFps(String(next.defaults?.fps ?? 24));
-        setDurationSeconds(String(next.defaults?.durationSeconds ?? 5));
+      const next = initialPresetId
+        ? matching.find((preset) => preset.id === initialPresetId)
+        : matching.find((preset) => preset.id === presetId) ?? matching[0];
+      if (!next) {
+        if (initialPresetId) setError("当前流程所需的受控工作流不可用，请检查 ComfyUI 预设配置。");
+        return;
       }
+      setPresetId(next.id);
+      setWidth(String(next.defaults?.width ?? 1024));
+      setHeight(String(next.defaults?.height ?? 1024));
+      setSeed(next.defaults?.seed === undefined ? "" : String(next.defaults.seed));
+      setDenoise(String(next.defaults?.denoise ?? 0.65));
+      setFrames(String(next.defaults?.frames ?? 121));
+      setFps(String(next.defaults?.fps ?? 24));
+      setDurationSeconds(initialPresetId === "h3-first-last-video-v1" && initialDurationSeconds
+        ? initialDurationSeconds
+        : String(next.defaults?.durationSeconds ?? 5));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "无法读取 ComfyUI 配置");
     } finally {
       setLoading(false);
     }
-  }, [asset.type, assetPath, onJobsObserved, presetId, request]);
+  }, [asset.type, assetPath, initialDurationSeconds, initialPresetId, onJobsObserved, presetId, request]);
 
   useEffect(() => { void reload(); }, [reload]);
   // A preflight result is tied to the exact server, preset, and parameter
@@ -1632,7 +1729,7 @@ function GenerationModal({
                 <div className="generation-section-heading"><div><strong>任务设置</strong><span>选择生成服务器和受控工作流</span></div></div>
                 <div className="generation-form-grid">
                   <SelectField ariaLabel="选择 ComfyUI 服务器" label="生成服务器" onChange={(value) => void chooseProfile(value)} options={profiles.map((profile) => ({ label: `${profile.name}${profile.configured && profile.enabled ? "" : " · 未配置"}`, value: profile.id }))} value={activeProfileId} />
-                  <SelectField ariaLabel="选择 ComfyUI 工作流" label="工作流" disabled={!availablePresets.length} onChange={choosePreset} options={availablePresets.map((preset) => ({ label: preset.label, value: preset.id }))} value={activePreset?.id || ""} />
+                  {initialPresetId ? <div className="generation-fixed-preset"><span>工作流</span><strong>{activePreset?.label || (loading ? "正在读取…" : "工作流不可用")}</strong></div> : <SelectField ariaLabel="选择 ComfyUI 工作流" label="工作流" disabled={!availablePresets.length} onChange={choosePreset} options={availablePresets.map((preset) => ({ label: preset.label, value: preset.id }))} value={activePreset?.id || ""} />}
                 </div>
               </section>
               <section className="generation-section generation-output-settings">
@@ -1666,7 +1763,7 @@ function GenerationModal({
           {jobs.length ? <section className="generation-job-list"><div><p className="eyebrow">当前资产任务</p><strong>{jobs.length} 个</strong></div>{jobs.slice(0, 4).map((job) => <article key={job.id}><span className={`generation-job-dot is-${job.status}`} /><div><strong>{job.presetLabel || "ComfyUI 任务"}</strong><small>{formatComfyJobStatus(job)}{formatComfyJobDetail(job)}</small></div>{job.outputPaths?.length ? <em>已归档</em> : null}{job.status === "queued" ? <button className="text-button generation-job-action" disabled={actingJobId === job.id} onClick={() => void actOnJob(job, "cancel")} type="button">取消排队</button> : null}{["failed", "cancelled"].includes(job.status) ? <button className="text-button generation-job-action" disabled={actingJobId === job.id} onClick={() => void actOnJob(job, "retry")} type="button">{actingJobId === job.id ? "处理中…" : "重试"}</button> : null}</article>)}</section> : null}
         </>}
       </div>
-      <footer className="modal-actions generation-modal-actions"><button className="text-button" onClick={onClose} type="button">取消</button><button className="text-button" disabled={loading || submitting || !activePreset} onClick={() => void inspectInputs()} type="button">检查输入</button><button className="submit-button" disabled={loading || submitting || !canSubmit} onClick={() => void queueJob()} type="button">{submitting ? "检查并提交…" : "确认生成"}</button></footer>
+      <footer className="modal-actions generation-modal-actions"><button className="text-button" onClick={onClose} type="button">取消</button><button className="text-button" disabled={loading || submitting || !activePreset} onClick={() => void inspectInputs()} type="button">检查输入</button><button className="submit-button" disabled={loading || submitting || !canSubmit} onClick={() => void queueJob()} type="button">{submitting ? "检查并提交…" : isVideo ? "提交图生视频" : "生成图片"}</button></footer>
     </section>
   </div>;
 }
@@ -1742,6 +1839,11 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   const [sceneLocationBindingsDraft, setSceneLocationBindingsDraft] = useState<SceneLocationBinding[]>([]);
   const [scenePropBindingsDraft, setScenePropBindingsDraft] = useState<ScenePropBinding[]>([]);
   const [designDraft, setDesignDraft] = useState<ShotDesign>(EMPTY_DESIGN);
+  const [shotDesignMode, setShotDesignMode] = useState<"preview" | "edit">("preview");
+  const [activeShotWorkflowStep, setActiveShotWorkflowStep] = useState<ShotWorkflowStepId>("design");
+  const [generationPresetId, setGenerationPresetId] = useState<string | undefined>();
+  const [generationDurationSeconds, setGenerationDurationSeconds] = useState<string | undefined>();
+  const workflowShotRootRef = useRef<string | null>(null);
   const [revisionConflictKey, setRevisionConflictKey] = useState<string | null>(null);
   const [importSourcePath, setImportSourcePath] = useState<string | null>(null);
   const [importShotIds, setImportShotIds] = useState<string[]>([]);
@@ -1953,21 +2055,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     })).filter((group) => group.shots.length > 0),
     [activeScene?.sceneId, draftGroups],
   );
-  const storyboardWorkflow = useMemo<WorkflowNode[]>(() => {
-    const hasScript = shotAssets.length > 0 || draftGroups.length > 0;
-    const hasScene = Boolean(activeScene);
-    const hasSceneSetup = Boolean(activeScene?.scene?.isComplete);
-    const hasShots = activeShotAssets.some((shot) => !shot.isDraft);
-    const hasGenerated = activeShotAssets.some((shot) => shot.slots.some((slot) => slot.files.some((file) => file.name.includes("已选") || file.kind === "video")));
-    const firstPending = [hasScript, hasScene, hasSceneSetup, hasShots, hasGenerated].findIndex((value) => !value);
-    return [
-      { label: "剧本", state: hasScript ? "done" : firstPending === 0 ? "current" : "pending" },
-      { label: "场次", state: hasScene ? "done" : firstPending === 1 ? "current" : "pending" },
-      { label: "资产", state: hasSceneSetup ? "done" : firstPending === 2 ? "current" : "pending" },
-      { label: "镜头", state: hasShots ? "done" : firstPending === 3 ? "current" : "pending" },
-      { label: "生成", state: hasGenerated ? "done" : firstPending === 4 ? "current" : "pending" },
-    ];
-  }, [activeScene, activeShotAssets, draftGroups.length, shotAssets.length]);
   const visibleAssets = useMemo(() => {
     const source = activeTab === "characters" ? characterAssets
       : activeTab === "locations" ? locationAssets
@@ -2049,6 +2136,92 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     }
     return [...effective.values()];
   }, [designDraft.characterOverrides, inheritedSceneCastForSelectedShot]);
+  const inheritedLocationsForSelectedShot = useMemo(() => {
+    if (selectedAsset?.type !== "shot" || !activeScene?.scene) return [];
+    return sceneLocationBindings(activeScene.scene)
+      .filter((binding) => bindingAppliesToShot(binding, selectedAsset.design.shotId))
+      .map((binding) => ({
+        label: locationAssets.find((asset) => asset.rootPath === binding.locationPath)?.name || displayFileName(binding.locationPath),
+        detail: [binding.role, binding.state].filter(Boolean).join(" · "),
+      }));
+  }, [activeScene?.scene, locationAssets, selectedAsset]);
+  const inheritedPropsForSelectedShot = useMemo(() => {
+    if (selectedAsset?.type !== "shot" || !activeScene?.scene) return [];
+    return scenePropBindings(activeScene.scene)
+      .filter((binding) => bindingAppliesToShot(binding, selectedAsset.design.shotId))
+      .map((binding) => ({
+        label: propAssets.find((asset) => asset.rootPath === binding.propPath)?.name || displayFileName(binding.propPath),
+        detail: [binding.role, binding.state].filter(Boolean).join(" · "),
+      }));
+  }, [activeScene?.scene, propAssets, selectedAsset]);
+  const selectedShotReferenceSlot = selectedAsset?.type === "shot" ? assetSlot(selectedAsset, "reference") : undefined;
+  const selectedShotFirstFrameSlot = selectedAsset?.type === "shot" ? assetSlot(selectedAsset, "firstFrame") : undefined;
+  const selectedShotLastFrameSlot = selectedAsset?.type === "shot" ? assetSlot(selectedAsset, "lastFrame") : undefined;
+  const selectedShotCandidateSlot = selectedAsset?.type === "shot" ? assetSlot(selectedAsset, "candidate") : undefined;
+  const selectedShotFirstFrame = selectedShotFirstFrameSlot ? selectedSlotVisual(selectedShotFirstFrameSlot) : undefined;
+  const selectedShotLastFrame = selectedShotLastFrameSlot ? selectedSlotVisual(selectedShotLastFrameSlot) : undefined;
+  const hasSelectedShotReference = Boolean(selectedAsset?.type === "shot" && hasSingleSelectedSlotVisual(selectedAsset, "reference"));
+  const hasSelectedSceneReference = Boolean(activeScene?.scene && ["setting", "reference", "firstFrame", "lastFrame"].some((key) => hasSingleSelectedSlotVisual(activeScene.scene!, key)));
+  const hasSelectedCharacterReference = effectiveCastForSelectedShot.some((entry) => {
+    const character = characterByPath.get(entry.characterPath);
+    const look = getLookForPath(character, entry.lookPath);
+    return Boolean(
+      look?.confirmedVisuals.reference
+      ?? look?.confirmedVisuals.turnaround
+      ?? look?.confirmedVisuals.costume
+      ?? character?.confirmedVisuals.reference
+      ?? character?.confirmedVisuals.turnaround
+      ?? character?.confirmedVisuals.costume,
+    );
+  });
+  const hasShotReference = hasSelectedShotReference || hasSelectedSceneReference || hasSelectedCharacterReference;
+  const hasSavedShotBrief = Boolean(
+    selectedAsset?.type === "shot"
+    && !selectedAsset.isDraft
+    && (selectedAsset.design.prompt.trim() || selectedAsset.design.content.trim()),
+  );
+  const hasSelectedFirstFrame = Boolean(selectedAsset?.type === "shot" && hasSingleSelectedSlotVisual(selectedAsset, "firstFrame"));
+  const hasSelectedLastFrame = Boolean(selectedAsset?.type === "shot" && hasSingleSelectedSlotVisual(selectedAsset, "lastFrame"));
+  const hasGeneratedShotVideo = Boolean(selectedAsset?.type === "shot" && selectedAsset.slots.some((slot) => (
+    ["candidate", "final", "video"].includes(slot.key) && slot.files.some(isVideo)
+  )));
+  const shotWorkflowNodes = useMemo<ShotWorkflowNode[]>(() => {
+    const completed = {
+      design: hasSavedShotBrief,
+      reference: hasShotReference || ["firstFrame", "lastFrame", "video"].includes(activeShotWorkflowStep),
+      firstFrame: hasSelectedFirstFrame,
+      lastFrame: hasSelectedLastFrame,
+      video: hasGeneratedShotVideo,
+    };
+    return [
+      { id: "design", label: "镜头设计", state: activeShotWorkflowStep === "design" ? "current" : completed.design ? "done" : "pending" },
+      { id: "reference", label: "画面参考", state: activeShotWorkflowStep === "reference" ? "current" : completed.reference ? "done" : "pending" },
+      { id: "firstFrame", label: "首帧", state: activeShotWorkflowStep === "firstFrame" ? "current" : completed.firstFrame ? "done" : "pending" },
+      { id: "lastFrame", label: "尾帧", state: activeShotWorkflowStep === "lastFrame" ? "current" : completed.lastFrame ? "done" : "pending" },
+      { id: "video", label: "图生视频", state: activeShotWorkflowStep === "video" ? "current" : completed.video ? "done" : "pending" },
+    ];
+  }, [activeShotWorkflowStep, hasGeneratedShotVideo, hasSavedShotBrief, hasSelectedFirstFrame, hasSelectedLastFrame, hasShotReference]);
+  const firstIncompleteShotWorkflowStep = useMemo<ShotWorkflowStepId>(() => (
+    !hasSavedShotBrief ? "design"
+      : !hasSelectedFirstFrame ? "firstFrame"
+        : !hasSelectedLastFrame ? "lastFrame"
+          : "video"
+  ), [hasSavedShotBrief, hasSelectedFirstFrame, hasSelectedLastFrame]);
+  useEffect(() => {
+    const rootPath = selectedAsset?.type === "shot" && !selectedAsset.isDraft
+      ? selectedAsset.rootPath || null
+      : null;
+    if (!rootPath) {
+      workflowShotRootRef.current = null;
+      return;
+    }
+    if (workflowShotRootRef.current === rootPath) return;
+    workflowShotRootRef.current = rootPath;
+    setActiveShotWorkflowStep(firstIncompleteShotWorkflowStep);
+    // Selecting another shot should resume at its first unfinished step. A
+    // media refresh must not advance the current step: selection and Next are
+    // deliberately separate actions in this production flow.
+  }, [firstIncompleteShotWorkflowStep, selectedAsset]);
   const selectedImportGroup = useMemo(
     () => activeDraftGroups.find((group) => group.sourcePath === importSourcePath) ?? null,
     [activeDraftGroups, importSourcePath],
@@ -2069,6 +2242,11 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       JSON.stringify(sceneLocationBindingsDraft) !== JSON.stringify(sceneLocationBindings(selectedAsset))
       || JSON.stringify(scenePropBindingsDraft) !== JSON.stringify(scenePropBindings(selectedAsset))
     ),
+  );
+  const hasUnsavedShotDesign = Boolean(
+    selectedAsset?.type === "shot"
+    && !selectedAsset.isDraft
+    && JSON.stringify(designDraft) !== JSON.stringify(selectedAsset.design),
   );
 
   useEffect(() => {
@@ -2092,9 +2270,8 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     if (selectedAsset.type === "location" || selectedAsset.type === "prop") {
       return sceneDraft !== (selectedAsset.profileContent || "") || hasUnsavedProjectSettingsDraft;
     }
-    return JSON.stringify(designDraft) !== JSON.stringify(selectedAsset.design)
-      || hasUnsavedProjectSettingsDraft;
-  }, [designDraft, hasUnsavedLookDraft, hasUnsavedProfileDraft, hasUnsavedProjectSettingsDraft, hasUnsavedSceneAssetBindings, sceneCastDraft, selectedAsset]);
+    return hasUnsavedShotDesign || hasUnsavedProjectSettingsDraft;
+  }, [hasUnsavedLookDraft, hasUnsavedProfileDraft, hasUnsavedProjectSettingsDraft, hasUnsavedSceneAssetBindings, hasUnsavedShotDesign, sceneCastDraft, selectedAsset]);
 
   useEffect(() => {
     if (!isDirty) return;
@@ -2131,7 +2308,10 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       setSceneDraft(selectedAsset.profileContent || "");
       setSceneMode("preview");
     }
-    if (selectedAsset?.type === "shot") setDesignDraft({ ...selectedAsset.design });
+    if (selectedAsset?.type === "shot") {
+      setDesignDraft({ ...selectedAsset.design });
+      setShotDesignMode("preview");
+    }
   }, [
     selectedAsset?.type === "character" ? selectedAsset.profileRevision : "",
     selectedAsset?.type === "location" || selectedAsset?.type === "prop" ? selectedAsset.profileRevision : "",
@@ -2701,7 +2881,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   };
 
   const handleSave = async () => {
-    if (!selectedAsset || selectedAsset.type === "shot" && selectedAsset.isDraft) return;
+    if (!selectedAsset || selectedAsset.type === "shot" && selectedAsset.isDraft) return false;
     setBusy(true);
     try {
       if (selectedAsset.type === "character") {
@@ -2741,6 +2921,8 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       }
       await loadSnapshot(true);
       setRevisionConflictKey(null);
+      if (selectedAsset.type === "shot") setShotDesignMode("preview");
+      return true;
     } catch (error) {
       if (error instanceof AssetApiError && error.code === "REVISION_CONFLICT") {
         setRevisionConflictKey(assetKey(selectedAsset));
@@ -2748,10 +2930,23 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       } else {
         notify("error", error instanceof Error ? error.message : "保存失败");
       }
+      return false;
     } finally {
       setBusy(false);
     }
   };
+
+  // Switching away from the design step must persist the draft first. The
+  // later frame/video steps read the saved Markdown on the server, so letting
+  // a node click bypass this save would make the preview and submitted prompt
+  // disagree with what the editor shows.
+  const selectShotWorkflowStep = useCallback(async (nextStep: ShotWorkflowStepId) => {
+    if (selectedAsset?.type !== "shot" || selectedAsset.isDraft || nextStep === activeShotWorkflowStep) return;
+    if (activeShotWorkflowStep === "design" && hasUnsavedShotDesign) {
+      if (!(await handleSave())) return;
+    }
+    setActiveShotWorkflowStep(nextStep);
+  }, [activeShotWorkflowStep, handleSave, hasUnsavedShotDesign, selectedAsset]);
 
   const handleSaveLook = async () => {
     if (!selectedAsset || selectedAsset.type !== "character" || !selectedCharacterLook?.documentRevision) return;
@@ -3077,7 +3272,8 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
         fileName: file.name,
       });
       await loadSnapshot(true);
-      notify("success", `已选为当前${slot.label}参考图，文件名已标记 -已选`);
+      const selectedLabel = slot.key === "firstFrame" || slot.key === "lastFrame" ? `${slot.label}已选图` : `${slot.label}参考图`;
+      notify("success", `已选为当前${selectedLabel}，文件名已标记 -已选`);
     } catch (error) {
       notify("error", error instanceof Error ? error.message : "无法设为当前参考图");
     } finally {
@@ -3185,14 +3381,65 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     setModal("scene");
   };
 
-  const openGeneration = () => {
+  const openGeneration = async (initialPresetId?: string, skipLeaveDraftCheck = false) => {
     if (!selectedAsset) return;
+    if (initialPresetId && selectedAsset.type === "shot" && !selectedAsset.isDraft && hasUnsavedShotDesign && !skipLeaveDraftCheck) {
+      const saved = await handleSave();
+      if (!saved) return;
+      skipLeaveDraftCheck = true;
+    }
+    setGenerationDurationSeconds(
+      initialPresetId === "h3-first-last-video-v1" && selectedAsset.type === "shot"
+        ? shotDurationSeconds(designDraft.duration)
+        : undefined,
+    );
     if (selectedAsset.type === "shot" && selectedAsset.isDraft) {
+      setGenerationPresetId(initialPresetId);
       setModal("generation");
       return;
     }
-    if (!confirmLeaveDraft("生成任务只读取当前已保存的 Markdown；纯文生图不上传参考图，图生图和视频工作流会在检查输入后上传明确列出的已选图片。未保存的编辑不会带入本次任务，是否继续？")) return;
+    if (!skipLeaveDraftCheck && !confirmLeaveDraft("生成任务只读取当前已保存的 Markdown；纯文生图不上传参考图，图生图和视频工作流会在检查输入后上传明确列出的已选图片。未保存的编辑不会带入本次任务，是否继续？")) return;
+    setGenerationPresetId(initialPresetId);
     setModal("generation");
+  };
+
+  const advanceShotWorkflow = async () => {
+    if (selectedAsset?.type !== "shot" || selectedAsset.isDraft) return;
+    if (activeShotWorkflowStep === "design") {
+      if (!designDraft.prompt.trim() && !designDraft.content.trim()) {
+        notify("error", "请先填写镜头画面或提示词");
+        return;
+      }
+      const saved = await handleSave();
+      if (saved) setActiveShotWorkflowStep("reference");
+      return;
+    }
+    if (activeShotWorkflowStep === "reference") {
+      setActiveShotWorkflowStep("firstFrame");
+      return;
+    }
+    if (activeShotWorkflowStep === "firstFrame") {
+      if (!hasSelectedFirstFrame) {
+        notify("error", "请先将一张首帧设为已选");
+        return;
+      }
+      setActiveShotWorkflowStep("lastFrame");
+      return;
+    }
+    if (activeShotWorkflowStep === "lastFrame") {
+      if (!hasSelectedLastFrame) {
+        notify("error", "请先将一张尾帧设为已选");
+        return;
+      }
+      setActiveShotWorkflowStep("video");
+      return;
+    }
+    if (!hasSelectedFirstFrame || !hasSelectedLastFrame) {
+      notify("error", "图生视频需要当前镜头已选的首帧和尾帧");
+      return;
+    }
+    if (hasUnsavedShotDesign && !(await handleSave())) return;
+    void openGeneration("h3-first-last-video-v1", true);
   };
 
   return (
@@ -3219,7 +3466,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
 
       <div className="asset-workspace-grid">
         <aside className="asset-library-rail">
-          <div className="asset-rail-heading"><p className="eyebrow">分镜主工作流</p><h1>制作</h1></div>
+          <div className="asset-rail-heading"><p className="eyebrow">项目导航</p><h1>资产</h1></div>
           <div className="asset-tabs" role="tablist" aria-label="制作与资产库">
             <button aria-controls="asset-list-panel" aria-selected={activeTab === "shots"} className={`is-primary-tab ${activeTab === "shots" ? "is-active" : ""}`} id="shots-tab" onClick={() => changeTab("shots")} role="tab" tabIndex={activeTab === "shots" ? 0 : -1} type="button"><span>分镜</span><b>{sceneGroups.length}</b></button>
             <button aria-controls="asset-list-panel" aria-selected={activeTab === "characters"} className={activeTab === "characters" ? "is-active" : ""} id="characters-tab" onClick={() => changeTab("characters")} role="tab" tabIndex={activeTab === "characters" ? 0 : -1} type="button"><span>人物</span><b>{characterAssets.length}</b></button>
@@ -3240,30 +3487,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
             />
             {activeScene ? <small>{sceneGroups.length} 场 · 当前 {activeScene.shots.length} 镜头{activeScene.draftCount ? ` · ${activeScene.draftCount} 待导入` : ""}</small> : <small>还没有可用场次</small>}
           </div> : null}
-          {activeTab === "shots" ? <StoryboardWorkflow nodes={storyboardWorkflow} onSelect={(index) => {
-            if (index === 0) {
-              if (activeDraftGroups.length) openStoryboardImport();
-              return;
-            }
-            if (index === 1) {
-              if (activeScene?.scene) selectAsset(assetKey(activeScene.scene));
-              else openCreateScene();
-              return;
-            }
-            if (index === 2) {
-              if (activeScene?.scene) selectAsset(assetKey(activeScene.scene));
-              return;
-            }
-            if (index === 3) {
-              if (activeShotAssets[0]) selectAsset(assetKey(activeShotAssets[0]));
-              else openCreate();
-              return;
-            }
-            if (activeShotAssets[0]) {
-              selectAsset(assetKey(activeShotAssets[0]));
-              window.setTimeout(openGeneration, 0);
-            }
-          }} /> : null}
           <div className="asset-list-tools"><div className="asset-search"><span aria-hidden="true">⌕</span><input aria-label={activeTab === "characters" ? "搜索人物" : activeTab === "locations" ? "搜索地点/环境" : activeTab === "props" ? "搜索道具" : "搜索当前场次镜头"} onChange={(event) => changeSearch(event.target.value)} placeholder={activeTab === "characters" ? "搜索人物" : activeTab === "locations" ? "搜索地点/环境" : activeTab === "props" ? "搜索道具" : "搜索当前场次镜头"} value={search} />{search ? <button aria-label="清空搜索" className="asset-search-clear" onClick={() => changeSearch("")} type="button">×</button> : null}</div>{activeTab === "characters" || activeTab === "locations" || activeTab === "props" ? <button aria-label="新建资产" className="add-asset-button" onClick={openCreate} type="button"><span aria-hidden="true">＋</span><b>新建</b></button> : <div className="scene-create-actions"><button aria-label="新建场次" className="add-asset-button is-secondary" onClick={openCreateScene} type="button"><span aria-hidden="true">＋</span><b>场次</b></button><button aria-label="新建镜头" className="add-asset-button" onClick={openCreate} type="button"><span aria-hidden="true">＋</span><b>镜头</b></button></div>}</div>
           {activeTab === "shots" ? <button className="import-storyboard-button" disabled={busy || !activeDraftGroups.length} onClick={openStoryboardImport} type="button"><span aria-hidden="true">⇣</span>导入当前场次剧本{activeDraftGroups.length ? <b>{activeDraftGroups.reduce((total, group) => total + group.shots.length, 0)}</b> : null}</button> : null}
           {activeTab === "shots" && activeScene?.scene ? <div className="scene-asset-summary"><SceneAssetCard active={assetKey(activeScene.scene) === selectedKey} onClick={() => selectAsset(assetKey(activeScene.scene!))} scene={activeScene.scene} /></div> : activeTab === "shots" && activeScene ? <button className="scene-asset-create-note" disabled={busy} onClick={() => void handleCreateScene(activeScene.sceneId)} type="button"><span>当前场次还没有独立资料文件夹</span><b>建立场次资产</b></button> : null}
@@ -3276,7 +3499,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
         <section className="asset-studio-column">
           <div className={`asset-studio-head asset-studio-toolbar ${selectedAsset?.type === "character" ? "is-character-studio" : ""} ${selectedAsset?.type === "scene" ? "is-scene-studio" : ""}`}>
             <div>
-              <p className="asset-breadcrumb">{selectedAsset?.type === "location" ? "资产库 / 地点/环境" : selectedAsset?.type === "prop" ? "资产库 / 道具" : activeTab === "characters" ? selectedAsset?.type === "character" ? `资产库 / 人物 / ${selectedAsset.roleCategory}` : "资产库 / 人物" : activeScene ? `分镜 / 场次（分镜生产容器） / ${activeScene.sceneId}` : "分镜 / 资产"}</p>
+              <p className="asset-breadcrumb">{selectedAsset?.type === "location" ? "资产库 / 地点/环境" : selectedAsset?.type === "prop" ? "资产库 / 道具" : activeTab === "characters" ? selectedAsset?.type === "character" ? `资产库 / 人物 / ${selectedAsset.roleCategory}` : "资产库 / 人物" : activeScene ? `分镜 / ${activeScene.sceneId}` : "分镜 / 资产"}</p>
               <div className="asset-title-row">
                 <h2>{selectedAsset ? displayWorkspaceAssetTitle(selectedAsset) : "选择一个资产开始"}</h2>
                 {selectedAsset?.type === "character" ? <span
@@ -3288,12 +3511,12 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                   {selectedAsset.roleCategory}
                 </span> : null}
               </div>
-              {activeTab === "shots" && activeScene ? <p className="studio-context">场次（分镜生产容器） · {activeScene.shots.length} 个镜头 · 按镜号顺序</p> : null}
+              {activeTab === "shots" && activeScene ? <p className="studio-context">{activeScene.sceneId} · {activeScene.shots.length} 个镜头</p> : null}
             </div>
             {selectedAsset ? <div className="asset-studio-actions">
               {isDirty || selectedAsset.type === "shot" && selectedAsset.isDraft ? <span className={`asset-state-pill ${isDirty ? "is-dirty" : ""}`}>{isDirty ? "未保存" : "待导入"}</span> : null}
               {selectedAsset.type === "shot" && selectedShotIndex >= 0 ? <div className="shot-stepper" aria-label="镜头导航"><span>{String(selectedShotIndex + 1).padStart(2, "0")} / {String(activeShotAssets.length).padStart(2, "0")}</span><button aria-label="上一个镜头" disabled={busy || selectedShotIndex === 0} onClick={() => moveSelectedShot(-1)} type="button">‹</button><button aria-label="下一个镜头" disabled={busy || selectedShotIndex === activeShotAssets.length - 1} onClick={() => moveSelectedShot(1)} type="button">›</button></div> : null}
-              {selectedAsset.type !== "location" && selectedAsset.type !== "prop" ? <button className="studio-action-button generation-open-button" disabled={busy} onClick={openGeneration} type="button">生成</button> : null}
+              {selectedAsset.type !== "location" && selectedAsset.type !== "prop" && selectedAsset.type !== "shot" ? <button className="studio-action-button generation-open-button" disabled={busy} onClick={() => void openGeneration()} type="button">生成</button> : null}
               {selectedAsset.type !== "shot" || !selectedAsset.isDraft ? <>
                 {selectedAsset.type !== "scene" ? <button className="studio-action-button" disabled={busy} onClick={openRename} type="button">重命名</button> : null}
                 <button className="studio-action-button is-danger" disabled={busy} onClick={() => setModal("trash")} type="button">移入回收站</button>
@@ -3460,10 +3683,12 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
               {selectedAsset.scenePath ? <section className="slot-section"><div className="section-heading"><div><p className="eyebrow">整场制作资料</p><h3>场次资料槽</h3></div><span>场景图、统一参考、首尾承接帧与整场成片分别管理</span></div><div className="slot-grid scene-slot-grid">{selectedAsset.slots.map((slot) => <SlotPanel confirmedFile={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot) : undefined} confirmedSourcePath={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot)?.path : undefined} disabled={busy} key={slot.key} onPreview={setMediaPreview} onSetConfirmed={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? (file) => void handleSetWorkspaceVisualSelection(slot, file) : undefined} onTrash={(file) => void handleTrashFile(slot, file)} onUpload={(files) => void handleUpload(slot, files)} slot={slot} />)}</div></section> : null}
             </div>
           ) : (
-            <div className="shot-editor">
-              {selectedShotMedia ? <PrimaryMedia file={selectedShotMedia} label={`${selectedAsset.design.shotId} ${displayShotTitle(selectedAsset)}`} onPreview={() => setMediaPreview(selectedShotMedia)} /> : null}
-              <section className="editor-card shot-design-editor"><div className="editor-card-heading"><div><p className="eyebrow">镜头设计器</p><h3>{selectedAsset.isDraft ? "分镜草稿 · 尚未建立资产" : "制作意图"}</h3></div>{selectedAsset.isDraft ? <button className="save-button primary" disabled={busy || !selectedAsset.sourcePath} onClick={handleCreateSelectedDraft} type="button">{busy ? "建立中…" : "建立镜头资产"}</button> : <button className="save-button" disabled={busy || !isDirty} onClick={() => void handleSave()} type="button">{busy ? "处理中…" : isDirty ? "保存镜头" : "已保存"}</button>}</div>
-                {selectedAsset.isDraft ? <DraftSummary design={designDraft} /> : <>
+            <div className={`shot-editor ${selectedAsset.isDraft ? "" : "is-workflow"}`}>
+              {selectedAsset.isDraft && selectedShotMedia ? <PrimaryMedia file={selectedShotMedia} label={`${selectedAsset.design.shotId} ${displayShotTitle(selectedAsset)}`} onPreview={() => setMediaPreview(selectedShotMedia)} /> : null}
+              {!selectedAsset.isDraft ? <ShotWorkflowStepper activeStep={activeShotWorkflowStep} disabled={busy} nodes={shotWorkflowNodes} onSelect={(step) => void selectShotWorkflowStep(step)} /> : null}
+              <div className="workflow-step-panel">
+              {selectedAsset.isDraft || activeShotWorkflowStep === "design" ? <section className="editor-card shot-design-editor"><div className="editor-card-heading"><div><p className="eyebrow">镜头设计</p><h3>{selectedAsset.isDraft ? "分镜草稿 · 尚未建立资产" : "镜头描述"}</h3></div>{selectedAsset.isDraft ? <button className="save-button primary" disabled={busy || !selectedAsset.sourcePath} onClick={handleCreateSelectedDraft} type="button">{busy ? "建立中…" : "建立镜头资产"}</button> : <div className="editor-card-heading-actions"><button aria-pressed={shotDesignMode === "edit"} className="editor-mode-button" onClick={() => setShotDesignMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{shotDesignMode === "preview" ? "修改" : "预览"}</button>{shotDesignMode === "edit" ? <button className="save-button" disabled={busy || !hasUnsavedShotDesign} onClick={() => void handleSave()} type="button">{busy ? "处理中…" : hasUnsavedShotDesign ? "保存" : "已保存"}</button> : null}</div>}</div>
+                {selectedAsset.isDraft ? <DraftSummary design={designDraft} /> : shotDesignMode === "preview" ? <ShotDesignPreview design={designDraft} /> : <>
                   <div className="design-grid">
                     <TextField label="时码" onChange={(value) => setDesignDraft((draft) => ({ ...draft, timecode: value }))} value={designDraft.timecode} />
                     <TextField label="时长" onChange={(value) => setDesignDraft((draft) => ({ ...draft, duration: value }))} value={designDraft.duration} />
@@ -3531,9 +3756,84 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                   </details>
                   <p className="editor-hint">场次和镜号固定；如需改标题，请使用右上角“重命名”。</p>
                 </>}
-              </section>
-              {selectedSourcePath ? <section className="source-context-card"><div className="source-context-heading"><div><p className="eyebrow">来源上下文</p><h3>{displayFileName(selectedSourcePath)}</h3><small title={selectedSourcePath}>原始分镜脚本</small></div><button className="source-context-toggle" disabled={sourceContext.loading} onClick={() => void toggleSourceContext()} type="button">{sourceContextOpen ? "收起原文" : sourceContext.error && sourceContext.path === selectedSourcePath ? "重新读取" : "查看原文"}</button></div>{sourceContextOpen ? <div className="source-context-body">{sourceContext.path !== selectedSourcePath || sourceContext.loading ? <p>正在读取原始剧本…</p> : sourceContext.error ? <p className="source-context-error">{sourceContext.error}</p> : <pre>{sourceContext.content || "原始剧本为空。"}</pre>}</div> : null}</section> : null}
-              {selectedAsset.isDraft ? <section className="draft-asset-note"><p className="eyebrow">下一步</p><p>建立镜头资产后，可添加参考图、首帧、尾帧和候选资料。</p></section> : <section className="slot-section"><div className="section-heading"><div><p className="eyebrow">制作资料</p><h3>镜头资料槽</h3></div><span>首帧、尾帧和候选分别管理</span></div><div className="slot-grid shot-slots">{selectedAsset.slots.map((slot) => <SlotPanel confirmedFile={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot) : undefined} confirmedSourcePath={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot)?.path : undefined} disabled={busy} key={slot.key} onPreview={setMediaPreview} onSetConfirmed={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? (file) => void handleSetWorkspaceVisualSelection(slot, file) : undefined} onTrash={(file) => void handleTrashFile(slot, file)} onUpload={(files) => void handleUpload(slot, files)} slot={slot} />)}</div></section>}
+              </section> : null}
+              {(selectedAsset.isDraft || activeShotWorkflowStep === "design") && selectedSourcePath ? <section className="source-context-card"><div className="source-context-heading"><div><p className="eyebrow">来源上下文</p><h3>{displayFileName(selectedSourcePath)}</h3><small title={selectedSourcePath}>原始分镜脚本</small></div><button className="source-context-toggle" disabled={sourceContext.loading} onClick={() => void toggleSourceContext()} type="button">{sourceContextOpen ? "收起原文" : sourceContext.error && sourceContext.path === selectedSourcePath ? "重新读取" : "查看原文"}</button></div>{sourceContextOpen ? <div className="source-context-body">{sourceContext.path !== selectedSourcePath || sourceContext.loading ? <p>正在读取原始剧本…</p> : sourceContext.error ? <p className="source-context-error">{sourceContext.error}</p> : <pre>{sourceContext.content || "原始剧本为空。"}</pre>}</div> : null}</section> : null}
+              {!selectedAsset.isDraft && activeShotWorkflowStep === "design" ? <WorkflowStepFooter disabled={busy} label="保存并下一步" onClick={() => void advanceShotWorkflow()} /> : null}
+              {!selectedAsset.isDraft && activeShotWorkflowStep === "reference" ? <section className="workflow-step-content">
+                <div className="workflow-step-heading"><div><p className="eyebrow">02 / 05</p><h3>画面参考</h3></div></div>
+                <div className="workflow-reference-overview" aria-label="当前镜头继承资料">
+                  <span className="workflow-reference-chip">{activeScene?.sceneId || selectedAsset.design.sceneId}</span>
+                  {effectiveCastForSelectedShot.map((entry) => {
+                    const character = characterByPath.get(entry.characterPath);
+                    return <span className="workflow-reference-chip" key={`reference-character-${entry.characterPath}`}>{character?.name || displayFileName(entry.characterPath)}{entry.state ? ` · ${entry.state}` : ""}</span>;
+                  })}
+                  {inheritedLocationsForSelectedShot.map((entry, index) => <span className="workflow-reference-chip" key={`reference-location-${index}`}>{entry.label}{entry.detail ? ` · ${entry.detail}` : ""}</span>)}
+                  {inheritedPropsForSelectedShot.map((entry, index) => <span className="workflow-reference-chip" key={`reference-prop-${index}`}>{entry.label}{entry.detail ? ` · ${entry.detail}` : ""}</span>)}
+                </div>
+                {selectedShotReferenceSlot ? <div className="workflow-slot"><SlotPanel
+                  confirmedFile={selectedSlotVisual(selectedShotReferenceSlot)}
+                  confirmedSourcePath={selectedSlotVisual(selectedShotReferenceSlot)?.path}
+                  disabled={busy}
+                  onPreview={setMediaPreview}
+                  onSetConfirmed={(file) => void handleSetWorkspaceVisualSelection(selectedShotReferenceSlot, file)}
+                  onTrash={(file) => void handleTrashFile(selectedShotReferenceSlot, file)}
+                  onUpload={(files) => void handleUpload(selectedShotReferenceSlot, files)}
+                  slot={selectedShotReferenceSlot}
+                /></div> : null}
+                <WorkflowStepFooter disabled={busy} label="下一步：首帧" onClick={() => void advanceShotWorkflow()} />
+              </section> : null}
+              {!selectedAsset.isDraft && activeShotWorkflowStep === "firstFrame" ? <section className="workflow-step-content">
+                <div className="workflow-step-heading"><div><p className="eyebrow">03 / 05</p><h3>首帧</h3></div><button className="studio-action-button generation-open-button" disabled={busy || !hasSavedShotBrief} onClick={() => void openGeneration(hasShotReference ? "shot-first-frame-img2img-v1" : "shot-first-frame-v1")} type="button">生成首帧</button></div>
+                {selectedShotFirstFrameSlot ? <div className="workflow-slot"><SlotPanel
+                  confirmedFile={selectedSlotVisual(selectedShotFirstFrameSlot)}
+                  confirmedSourcePath={selectedSlotVisual(selectedShotFirstFrameSlot)?.path}
+                  disabled={busy}
+                  onPreview={setMediaPreview}
+                  onSetConfirmed={(file) => void handleSetWorkspaceVisualSelection(selectedShotFirstFrameSlot, file)}
+                  onTrash={(file) => void handleTrashFile(selectedShotFirstFrameSlot, file)}
+                  onUpload={(files) => void handleUpload(selectedShotFirstFrameSlot, files)}
+                  slot={selectedShotFirstFrameSlot}
+                /></div> : null}
+                <WorkflowStepFooter disabled={busy} label="下一步：尾帧" onClick={() => void advanceShotWorkflow()} />
+              </section> : null}
+              {!selectedAsset.isDraft && activeShotWorkflowStep === "lastFrame" ? <section className="workflow-step-content">
+                <div className="workflow-step-heading"><div><p className="eyebrow">04 / 05</p><h3>尾帧</h3></div><button className="studio-action-button generation-open-button" disabled={busy || !hasSelectedFirstFrame} onClick={() => void openGeneration("shot-last-frame-img2img-v1")} type="button">生成尾帧</button></div>
+                <div className="workflow-frame-pair is-single"><WorkflowFramePreview file={selectedShotFirstFrame} label="已选首帧" onPreview={setMediaPreview} /></div>
+                {selectedShotLastFrameSlot ? <div className="workflow-slot"><SlotPanel
+                  confirmedFile={selectedSlotVisual(selectedShotLastFrameSlot)}
+                  confirmedSourcePath={selectedSlotVisual(selectedShotLastFrameSlot)?.path}
+                  disabled={busy}
+                  onPreview={setMediaPreview}
+                  onSetConfirmed={(file) => void handleSetWorkspaceVisualSelection(selectedShotLastFrameSlot, file)}
+                  onTrash={(file) => void handleTrashFile(selectedShotLastFrameSlot, file)}
+                  onUpload={(files) => void handleUpload(selectedShotLastFrameSlot, files)}
+                  slot={selectedShotLastFrameSlot}
+                /></div> : null}
+                <WorkflowStepFooter disabled={busy} label="下一步：图生视频" onClick={() => void advanceShotWorkflow()} />
+              </section> : null}
+              {!selectedAsset.isDraft && activeShotWorkflowStep === "video" ? <section className="workflow-step-content">
+                <div className="workflow-step-heading"><div><p className="eyebrow">05 / 05</p><h3>图生视频</h3></div></div>
+                <div className="workflow-frame-pair"><WorkflowFramePreview file={selectedShotFirstFrame} label="首帧" onPreview={setMediaPreview} /><WorkflowFramePreview file={selectedShotLastFrame} label="尾帧" onPreview={setMediaPreview} /></div>
+                <dl className="workflow-video-brief">
+                  <div><dt>画面</dt><dd>{designDraft.content || designDraft.prompt || "未填写"}</dd></div>
+                  <div><dt>运镜</dt><dd>{designDraft.camera || "未填写"}</dd></div>
+                  <div><dt>时长</dt><dd>{designDraft.duration || "默认"}</dd></div>
+                  {designDraft.dialogue ? <div><dt>台词</dt><dd>{designDraft.dialogue}</dd></div> : null}
+                </dl>
+                {selectedShotCandidateSlot && hasGeneratedShotVideo ? <div className="workflow-slot"><SlotPanel
+                  confirmedFile={selectedSlotVisual(selectedShotCandidateSlot)}
+                  confirmedSourcePath={selectedSlotVisual(selectedShotCandidateSlot)?.path}
+                  disabled={busy}
+                  onPreview={setMediaPreview}
+                  onSetConfirmed={(file) => void handleSetWorkspaceVisualSelection(selectedShotCandidateSlot, file)}
+                  onTrash={(file) => void handleTrashFile(selectedShotCandidateSlot, file)}
+                  onUpload={(files) => void handleUpload(selectedShotCandidateSlot, files)}
+                  slot={selectedShotCandidateSlot}
+                /></div> : null}
+                <WorkflowStepFooter disabled={busy} label={hasGeneratedShotVideo ? "再次生成图生视频" : "提交图生视频"} onClick={() => void advanceShotWorkflow()} />
+              </section> : null}
+              {selectedAsset.isDraft ? <section className="draft-asset-note"><p className="eyebrow">下一步</p><p>建立镜头资产后，可添加参考图、首帧、尾帧和候选资料。</p></section> : null}
+              </div>
             </div>
           )}
         </section>
@@ -3555,9 +3855,11 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
 
       {modal === "generation" && selectedAsset ? <GenerationModal
         asset={selectedAsset}
+        initialDurationSeconds={generationDurationSeconds}
+        initialPresetId={generationPresetId}
         lookPath={selectedAsset.type === "character" ? selectedCharacterLook?.rootPath : undefined}
         projectId={projectId ?? undefined}
-        onClose={() => setModal(null)}
+        onClose={() => { setModal(null); setGenerationDurationSeconds(undefined); setGenerationPresetId(undefined); }}
         onJobsObserved={handleGenerationJobsObserved}
         onQueued={handleGenerationQueued}
       /> : modal === "trashList" ? <TrashModal

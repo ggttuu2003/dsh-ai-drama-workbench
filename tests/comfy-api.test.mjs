@@ -7,17 +7,22 @@ import { mkdtemp, readFile, realpath, rename, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-import { createComfyApi } from '../src/comfy-api.js'
+import { buildShotVideoBrief, createComfyApi, MAX_SHOT_VIDEO_BRIEF_CHARS } from '../src/comfy-api.js'
 import { createComfyJobStore, saveComfyConfig } from '../src/comfy-core.js'
 import {
   createCharacterAsset,
+  createLocationAsset,
+  createPropAsset,
   createSceneAsset,
   createShotAsset,
   getAssetWorkspaceSnapshot,
   saveAssetUploadStream,
   setCharacterVisualSelection,
   setWorkspaceVisualSelection,
+  updateProjectSettings,
+  updateSceneAssetBindings,
   updateSceneCastBindings,
+  updateSceneDocument,
   withProjectRoot,
 } from '../lib/workspace-core.js'
 
@@ -198,6 +203,60 @@ function recoveredCharacterJob(characterPath, status, { remote = undefined, erro
     ...(error ? { error } : {}),
   }
 }
+
+test('shot video briefs retain relevant inherited context while staying below the H3 prompt cap', () => {
+  const projectAnchor = '寒潮将临，城市停电。'
+  const brief = buildShotVideoBrief({
+    projectSettings: { content: `${projectAnchor}${' 项目补充设定。'.repeat(4_000)}` },
+    characters: [{
+      rootPath: '主要人物/沈墨',
+      name: '沈墨',
+      profileContent: '年轻巡夜人，湿透的黑色斗篷。',
+      looks: [{ rootPath: '主要人物/沈墨/造型/LOOK-001-雨夜', name: '雨夜造型', documentContent: '斗篷边缘滴水，手套沾着泥。' }],
+    }],
+    locations: [{ rootPath: '场景/雨夜巷道', name: '雨夜巷道', profileContent: '狭窄石板路，霓虹反射在积水中。' }],
+    props: [{ rootPath: '道具/铜钥匙', name: '铜钥匙', profileContent: '旧铜钥匙，齿纹磨损。' }],
+    scenes: [{
+      sceneId: 'EP001-SC001',
+      sceneContent: '暴雨中的旧城巷道，远处传来警报。',
+      castBindings: [
+        { characterPath: '主要人物/沈墨', lookPath: '主要人物/沈墨/造型/LOOK-001-雨夜', state: '右手握钥匙', continuity: '斗篷保持湿润', startShotId: 'SH002', endShotId: 'SH002' },
+        { characterPath: '主要人物/不应出现', state: '不应出现', continuity: '', startShotId: 'SH001', endShotId: 'SH001' },
+      ],
+      locationBindings: [
+        { locationPath: '场景/雨夜巷道', role: '追逐空间', state: '地面有积水', continuity: '霓虹倒影持续可见', startShotId: 'SH002', endShotId: 'SH002' },
+        { locationPath: '场景/过期地点', role: '不应出现', state: '', continuity: '', startShotId: 'SH001', endShotId: 'SH001' },
+      ],
+      propBindings: [{ propPath: '道具/铜钥匙', role: '关键线索', state: '握在右手', continuity: '不能消失', startShotId: '', endShotId: '' }],
+    }],
+  }, {
+    design: {
+      sceneId: 'EP001-SC001',
+      shotId: 'SH002',
+      title: '钥匙特写',
+      timecode: '00:00:03:00-00:00:05:00',
+      duration: '2 秒',
+      framing: '近景',
+      content: '沈墨在雨中抬起铜钥匙。',
+      dialogue: '门快开了。',
+      camera: '缓慢推近',
+      prompt: 'cinematic close-up of a wet brass key',
+      negativePrompt: '不要文字',
+      references: '雨夜电影质感',
+      status: '待生成',
+    },
+  })
+
+  assert.match(brief, /镜头核心画面：cinematic close-up of a wet brass key/u)
+  assert.match(brief, /场次环境：暴雨中的旧城巷道/u)
+  assert.match(brief, /出场人物：沈墨，造型：雨夜造型，状态：右手握钥匙/u)
+  assert.match(brief, /地点环境：雨夜巷道，用途：追逐空间/u)
+  assert.match(brief, /关键道具：铜钥匙，用途：关键线索/u)
+  assert.match(brief, new RegExp(projectAnchor, 'u'))
+  assert.doesNotMatch(brief, /不应出现/u)
+  assert.ok(brief.length <= MAX_SHOT_VIDEO_BRIEF_CHARS)
+  assert.match(brief, /…$/u)
+})
 
 test('ComfyUI API keeps tokens private, checks first/last frames, and archives image outputs safely', async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'dsh-ai-drama-comfy-'))
@@ -542,7 +601,10 @@ test('H3 first/last-frame jobs omit unsupported negative prompts and archive vid
   try {
     await saveMockConfig(configPath, bridge.url)
     const shotPath = await withProjectRoot(root, async () => {
-      await createSceneAsset('EP001-SC003')
+      const characterPath = await createCharacterAsset('雨夜巡夜人')
+      const locationPath = await createLocationAsset('雨夜巷道')
+      const propPath = await createPropAsset('铜钥匙')
+      const scenePath = await createSceneAsset('EP001-SC003')
       const created = await createShotAsset('EP001-SC003', 'SH001', 'H3 首尾帧测试', {
         sceneId: 'EP001-SC003',
         shotId: 'SH001',
@@ -558,6 +620,36 @@ test('H3 first/last-frame jobs omit unsupported negative prompts and archive vid
         references: '',
         status: '待生成',
       })
+      const initial = await getAssetWorkspaceSnapshot()
+      const scene = initial.scenes.find(item => item.rootPath === scenePath)
+      assert.ok(scene)
+      await updateProjectSettings('项目基调：寒冷写实，雨水与霓虹反光必须连续。', initial.projectSettings.revision)
+      await updateSceneDocument(scenePath, '雨夜巷道积水，远处警报闪烁。', scene.sceneRevision)
+      await updateSceneCastBindings(scenePath, [{
+        characterPath,
+        state: '斗篷被雨打湿，右手抬起钥匙',
+        continuity: '斗篷和钥匙始终湿润',
+        startShotId: 'SH001',
+        endShotId: 'SH001',
+      }], scene.castRevision)
+      await updateSceneAssetBindings(scenePath, {
+        locations: [{
+          locationPath,
+          role: '主要行动空间',
+          state: '地面有积水和霓虹倒影',
+          continuity: '倒影方向保持一致',
+          startShotId: 'SH001',
+          endShotId: 'SH001',
+        }],
+        props: [{
+          propPath,
+          role: '关键线索',
+          state: '握在右手',
+          continuity: '始终可见',
+          startShotId: 'SH001',
+          endShotId: 'SH001',
+        }],
+      }, scene.assetBindingsRevision)
       await saveAssetUploadStream('shot', created, 'firstFrame', '首帧.png', Readable.from([PIXEL_PNG]))
       await saveAssetUploadStream('shot', created, 'lastFrame', '尾帧.png', Readable.from([PIXEL_PNG]))
       await setWorkspaceVisualSelection('shot', created, 'firstFrame', '首帧.png')
@@ -596,11 +688,17 @@ test('H3 first/last-frame jobs omit unsupported negative prompts and archive vid
     assert.equal(bridge.received.jobs[0].workflowId, 'video-first-last')
     assert.deepEqual(bridge.received.jobs[0].uploads.map(item => item.role), ['firstFrame', 'lastFrame'])
     assert.equal('negativePrompt' in bridge.received.jobs[0].inputs, false)
-    assert.deepEqual(bridge.received.jobs[0].inputs, {
-      prompt: 'cinematic character walks forward',
-      durationSeconds: 5,
-      seed: 757358688076805,
-    })
+    assert.deepEqual(Object.keys(bridge.received.jobs[0].inputs).sort(), ['durationSeconds', 'prompt', 'seed'])
+    assert.equal(bridge.received.jobs[0].inputs.durationSeconds, 5)
+    assert.equal(bridge.received.jobs[0].inputs.seed, 757358688076805)
+    assert.match(bridge.received.jobs[0].inputs.prompt, /镜头核心画面：cinematic character walks forward/u)
+    assert.match(bridge.received.jobs[0].inputs.prompt, /画面内容：人物从远处走近。/u)
+    assert.match(bridge.received.jobs[0].inputs.prompt, /镜头信息：标题：H3 首尾帧测试；景别：全景；运镜：缓慢推进/u)
+    assert.match(bridge.received.jobs[0].inputs.prompt, /场次环境：雨夜巷道积水，远处警报闪烁。/u)
+    assert.match(bridge.received.jobs[0].inputs.prompt, /出场人物：雨夜巡夜人，状态：斗篷被雨打湿/u)
+    assert.match(bridge.received.jobs[0].inputs.prompt, /地点环境：雨夜巷道，用途：主要行动空间/u)
+    assert.match(bridge.received.jobs[0].inputs.prompt, /关键道具：铜钥匙，用途：关键线索/u)
+    assert.match(bridge.received.jobs[0].inputs.prompt, /项目设定：项目基调：寒冷写实/u)
     assert.equal(completed.outputPaths.length, 1)
     assert.match(completed.outputPaths[0], /^分镜\/EP001-SC003\/SH001-H3 首尾帧测试\/候选\/.+\.mp4$/u)
     const outputPath = path.join(root, ...completed.outputPaths[0].split('/'))
