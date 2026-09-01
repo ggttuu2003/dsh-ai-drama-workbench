@@ -1450,6 +1450,8 @@ type ComfyJob = {
 type ComfyPreview = {
   summary?: string;
   outputSlotLabel?: string;
+  prompt?: string;
+  negativePrompt?: string;
   attachments?: Array<{ role: string; name: string }>;
   warnings?: string[];
   errors?: string[];
@@ -1520,6 +1522,10 @@ function GenerationModal({
   const [frames, setFrames] = useState("121");
   const [fps, setFps] = useState("24");
   const [durationSeconds, setDurationSeconds] = useState("5");
+  const [promptDraft, setPromptDraft] = useState<string | null>(null);
+  const [negativePromptDraft, setNegativePromptDraft] = useState<string | null>(null);
+  const [promptLoading, setPromptLoading] = useState(false);
+  const promptInitializationKeyRef = useRef<string | null>(null);
   const assetPath = asset.rootPath;
   const availablePresets = presets.filter((preset) => preset.assetTypes.includes(asset.type));
   // A workflow opened from a shot step is intentionally locked. If the
@@ -1529,6 +1535,18 @@ function GenerationModal({
     ? availablePresets.find((preset) => preset.id === initialPresetId)
     : availablePresets.find((preset) => preset.id === presetId) ?? availablePresets[0];
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId);
+  const isVideo = activePreset?.outputKind === "video";
+  const promptInitializationKey = !isVideo && activePreset
+    ? [projectId || "", asset.type, assetPath, lookPath || "", activePreset.id].join("\u0000")
+    : "";
+  const promptHydrationBody = useMemo(() => ({
+    assetType: asset.type,
+    assetPath,
+    ...(asset.type === "character" && lookPath ? { lookPath } : {}),
+    presetId: activePreset?.id,
+    ...(projectId ? { projectId } : {}),
+    options: { useReferenceImages: Boolean(activePreset?.referenceImagesEnabled) },
+  }), [activePreset?.id, activePreset?.referenceImagesEnabled, asset.type, assetPath, lookPath, projectId]);
 
   useEffect(() => {
     document.body.dataset.aiDramaGeneration = "open";
@@ -1595,7 +1613,7 @@ function GenerationModal({
   // approval cannot be submitted accidentally.
   useEffect(() => {
     setPreview(null);
-  }, [activeProfileId, activePreset?.id, denoise, durationSeconds, frames, fps, height, seed, width]);
+  }, [activeProfileId, activePreset?.id, denoise, durationSeconds, frames, fps, height, negativePromptDraft, promptDraft, seed, width]);
   useEffect(() => {
     if (!assetPath) return undefined;
     const timer = window.setInterval(() => { void request<{ jobs: ComfyJob[] }>(`/jobs?assetPath=${encodeURIComponent(assetPath)}`)
@@ -1613,6 +1631,12 @@ function GenerationModal({
     presetId: activePreset?.id,
     profileId: activeProfileId,
     ...(projectId ? { projectId } : {}),
+    // Keep prompt edits task-local. Null means the initial server preview has
+    // not arrived yet, so omit overrides and let the server derive its value.
+    ...(!isVideo && promptDraft !== null ? {
+      prompt: promptDraft,
+      negativePrompt: negativePromptDraft ?? "",
+    } : {}),
     options: {
       width,
       height,
@@ -1624,6 +1648,40 @@ function GenerationModal({
       useReferenceImages: Boolean(activePreset?.referenceImagesEnabled),
     },
   });
+
+  useEffect(() => {
+    setPromptDraft(null);
+    setNegativePromptDraft(null);
+    setPromptLoading(false);
+    if (!promptInitializationKey) promptInitializationKeyRef.current = null;
+  }, [promptInitializationKey]);
+
+  useEffect(() => {
+    if (!promptInitializationKey || loading || !activePreset) return;
+    if (promptInitializationKeyRef.current === promptInitializationKey) return;
+    promptInitializationKeyRef.current = promptInitializationKey;
+    let cancelled = false;
+    setPromptLoading(true);
+    // The first preflight is intentionally silent: it only hydrates the
+    // editable values with the exact prompt the server derives from Markdown.
+    void request<{ preview: ComfyPreview }>("/jobs/preview", { body: JSON.stringify(promptHydrationBody), method: "POST" })
+      .then(({ preview: nextPreview }) => {
+        if (cancelled) return;
+        setPromptDraft(typeof nextPreview.prompt === "string" ? nextPreview.prompt : "");
+        setNegativePromptDraft(typeof nextPreview.negativePrompt === "string" ? nextPreview.negativePrompt : "");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // Keep the fields usable if an older server does not yet expose prompt
+        // values in previews, or if this read-only request cannot complete.
+        setPromptDraft("");
+        setNegativePromptDraft("");
+      })
+      .finally(() => {
+        if (!cancelled) setPromptLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [loading, promptHydrationBody, promptInitializationKey, request]);
 
   const chooseProfile = async (profileId: string) => {
     setActiveProfileId(profileId);
@@ -1708,7 +1766,6 @@ function GenerationModal({
 
   const profileReady = Boolean(activeProfile?.enabled && activeProfile?.configured);
   const canSubmit = Boolean(activePreset && profileReady);
-  const isVideo = activePreset?.outputKind === "video";
   const supportsInput = (key: string) => Boolean(activePreset?.inputs?.some((input) => input.key === key));
   const hasEditableVideoSpec = ["width", "height", "durationSeconds", "frames", "fps"].some(supportsInput);
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
@@ -1719,7 +1776,7 @@ function GenerationModal({
       </header>
       <div className="generation-modal-body">
           <div className="generation-asset-strip">
-          <div className="generation-asset-strip-copy"><span>当前资产</span><strong>{displayWorkspaceAssetTitle(asset)}</strong><small>{isVideo ? "读取已保存设定，并使用已选首帧和尾帧" : activePreset?.referenceImagesEnabled ? "图生图：读取已保存设定，并上传检查页列出的已选输入图" : "纯文生图：只读取已保存设定，不上传参考图"}</small></div>
+          <div className="generation-asset-strip-copy"><span>当前资产</span><strong>{displayWorkspaceAssetTitle(asset)}</strong><small>{isVideo ? "读取已保存设定，并使用已选首帧和尾帧" : activePreset?.referenceImagesEnabled ? "图生图：可临时改提示词，上传检查页列出的已选输入图" : "纯文生图：可临时改提示词，不上传参考图"}</small></div>
           <span className="generation-output-kind">{isVideo ? "视频候选" : "图片候选"}</span>
         </div>
         {loading ? <p className="generation-loading">正在读取服务器配置与工作流预设…</p> : <>
@@ -1732,6 +1789,13 @@ function GenerationModal({
                   {initialPresetId ? <div className="generation-fixed-preset"><span>工作流</span><strong>{activePreset?.label || (loading ? "正在读取…" : "工作流不可用")}</strong></div> : <SelectField ariaLabel="选择 ComfyUI 工作流" label="工作流" disabled={!availablePresets.length} onChange={choosePreset} options={availablePresets.map((preset) => ({ label: preset.label, value: preset.id }))} value={activePreset?.id || ""} />}
                 </div>
               </section>
+              {!isVideo && activePreset ? <section className="generation-section">
+                <div className="generation-section-heading"><div><strong>提示词</strong><span>仅本次生成</span></div></div>
+                <div className="generation-prompt-fields">
+                  <TextField disabled={promptDraft === null} label="提示词" multiline onChange={(value) => { setPromptDraft(value); setPreview(null); }} placeholder={promptLoading ? "正在读取…" : "输入提示词"} value={promptDraft ?? ""} />
+                  <TextField disabled={negativePromptDraft === null} label="负面提示词" multiline onChange={(value) => { setNegativePromptDraft(value); setPreview(null); }} placeholder={promptLoading ? "正在读取…" : "输入负面提示词"} value={negativePromptDraft ?? ""} />
+                </div>
+              </section> : null}
               <section className="generation-section generation-output-settings">
                 <div className="generation-section-heading"><div><strong>输出规格</strong><span>{isVideo ? "只显示当前云端工作流允许覆盖的参数" : "设置候选图的画幅"}</span></div></div>
                 {!isVideo || hasEditableVideoSpec ? <div className={`generation-parameter-grid ${isVideo ? "is-video" : ""}`}>

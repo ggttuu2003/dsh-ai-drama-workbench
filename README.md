@@ -147,6 +147,8 @@ Bridge 默认只监听服务器回环地址。建议使用 HTTPS 反向代理、
 4. H3 首尾帧视频需要在镜头的首帧和尾帧资料槽中各设一张为 `-已选`。选中资产后点击右上“生成”，选择服务器与固定预设，再点“检查输入”。
 5. 确认无误后点“确认生成”。人物三视图/定妆、场景图、镜头候选、首帧、尾帧和 H3 视频都会进入各自对应资料槽；不会自动标为已选或覆盖定稿。
 
+图片任务的生成弹窗会显示提示词和负面提示词，可在提交前临时修改；修改只影响本次任务，不回写人物、地点/环境或镜头 Markdown。图生视频仍只读取已保存的镜头资料。
+
 需要拖入 ComfyUI 画布时，请使用 `cloud-bridge/comfyui-workflows/z-image-turbo-image-to-image.json`。Bridge 实际执行的是 `cloud-bridge/api-workflows/image-to-image.api.json`，并由 `cloud-bridge/workflows/image-to-image.json` 声明允许替换的节点字段；后两者都不是画布文件，不能拖入 ComfyUI。三个文件沿用当前 Z-Image Turbo 模型并只使用 ComfyUI 内置的 `LoadImage`、`ImageScale`、`VAEEncode`、`KSampler`、`VAEDecode` 节点。ComfyUI 官方的通用图生图节点连接方式可在 [Image-to-Image 官方示例](https://comfyanonymous.github.io/ComfyUI_examples/img2img/) 查看；官方示例使用 SD1.5，仅用于理解节点连接，不应直接替换本项目的 Z-Image 模型文件。
 
 `H3 首尾帧视频` 会严格要求镜头的首帧和尾帧都已标为 `-已选`。任务开始前会再次校验这些已选文件仍然存在，避免排队期间换图却误用旧参考。任务状态和归档结果会显示在同一生成弹窗内；失败或取消的本地任务可点“重试”，尚未提交到云端的排队任务可点“取消排队”。任务记录保存在项目的隐藏目录 `.workbench/jobs/`，不会出现在资产列表中。

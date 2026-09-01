@@ -556,6 +556,108 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
   }
 })
 
+test('ComfyUI API applies per-job image prompt overrides without rewriting the shot', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'dsh-ai-drama-comfy-prompt-'))
+  const root = await realpath(temporary)
+  const configPath = path.join(temporary, 'private-comfy.json')
+  const state = { root: async () => root }
+  const bridge = await startMockBridge()
+  const api = createComfyApi(state, { configPath, pollIntervalMs: 5, maxPollMs: 2_000 })
+
+  try {
+    await saveMockConfig(configPath, bridge.url)
+    const shotPath = await withProjectRoot(root, async () => {
+      await createSceneAsset('EP001-SC501')
+      return createShotAsset('EP001-SC501', 'SH001', '临时提示词镜头', {
+        sceneId: 'EP001-SC501',
+        shotId: 'SH001',
+        title: '临时提示词镜头',
+        timecode: '00:00:00:00-00:00:03:00',
+        duration: '3 秒',
+        framing: '中景',
+        content: '已保存的镜头内容。',
+        dialogue: '',
+        camera: '固定镜头',
+        prompt: 'saved image prompt',
+        negativePrompt: 'saved negative prompt',
+        references: '',
+        status: '待生成',
+      })
+    })
+    const body = {
+      assetType: 'shot',
+      assetPath: shotPath,
+      presetId: 'shot-image-v1',
+      profileId: 'mock-cloud',
+      options: { width: '1280', height: '720' },
+    }
+
+    const savedPreview = await call(api, jsonRequest(body), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
+    assert.equal(savedPreview.status, 200)
+    assert.equal(savedPreview.payload.preview.prompt, 'saved image prompt')
+    assert.equal(savedPreview.payload.preview.negativePrompt, 'saved negative prompt')
+
+    const override = {
+      ...body,
+      prompt: '  temporary image prompt  ',
+      negativePrompt: '  temporary negative prompt  ',
+    }
+    const preview = await call(api, jsonRequest(override), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
+    assert.equal(preview.status, 200)
+    assert.equal(preview.payload.preview.prompt, 'temporary image prompt')
+    assert.equal(preview.payload.preview.negativePrompt, 'temporary negative prompt')
+    assert.match(preview.payload.preview.summary, /临时提示词/u)
+    assert.equal(preview.payload.preview.errors.length, 0)
+
+    const submission = await call(api, jsonRequest(override), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs')
+    assert.equal(submission.status, 202)
+    await waitFor(async () => {
+      const listed = await call(api, getRequest(), `http://127.0.0.1/ai-drama/workbench/comfy/jobs?assetPath=${encodeURIComponent(shotPath)}`)
+      const job = listed.payload.jobs.find(item => item.id === submission.payload.job.id)
+      if (job?.status === 'failed') throw new Error(`Prompt override job failed: ${job.error || 'unknown error'}`)
+      return job?.status === 'completed' ? job : undefined
+    })
+    assert.equal(bridge.received.jobs.length, 1)
+    assert.equal(bridge.received.jobs[0].inputs.prompt, 'temporary image prompt')
+    assert.equal(bridge.received.jobs[0].inputs.negativePrompt, 'temporary negative prompt')
+
+    const source = await withProjectRoot(root, () => getAssetWorkspaceSnapshot())
+    const unchangedShot = source.shots.find(item => item.rootPath === shotPath)
+    assert.equal(unchangedShot?.design.prompt, 'saved image prompt')
+    assert.equal(unchangedShot?.design.negativePrompt, 'saved negative prompt')
+
+    const emptyPrompt = await call(api, jsonRequest({ ...body, prompt: '' }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
+    assert.equal(emptyPrompt.status, 200)
+    assert.equal(emptyPrompt.payload.preview.prompt, '')
+    assert.ok(emptyPrompt.payload.preview.errors.some(message => message.includes('没有可用提示词')))
+
+    const clearedNegative = await call(api, jsonRequest({
+      ...body,
+      prompt: 'temporary prompt without negative',
+      negativePrompt: '',
+    }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
+    assert.equal(clearedNegative.status, 200)
+    assert.equal(clearedNegative.payload.preview.negativePrompt, '')
+
+    const invalidPrompt = await call(api, jsonRequest({ ...body, prompt: 7 }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
+    assert.equal(invalidPrompt.status, 400)
+    assert.match(invalidPrompt.payload.error, /临时提示词无效/u)
+    const longNegative = await call(api, jsonRequest({ ...body, negativePrompt: 'x'.repeat(20_001) }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
+    assert.equal(longNegative.status, 400)
+    assert.match(longNegative.payload.error, /临时负面提示词无效/u)
+    const videoOverride = await call(api, jsonRequest({
+      ...body,
+      presetId: 'h3-first-last-video-v1',
+      prompt: 'video prompt must remain saved-only',
+    }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
+    assert.equal(videoOverride.status, 400)
+    assert.match(videoOverride.payload.error, /视频工作流不支持临时修改提示词/u)
+  } finally {
+    await bridge.close()
+    await rm(temporary, { recursive: true, force: true })
+  }
+})
+
 test('ComfyUI API generates reusable location scene images and lists their jobs', async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'dsh-ai-drama-comfy-location-'))
   const root = await realpath(temporary)
