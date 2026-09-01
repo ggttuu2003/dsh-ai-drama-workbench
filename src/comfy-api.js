@@ -40,7 +40,7 @@ const DEFAULT_POLL_INTERVAL_MS = 1_500
 const DEFAULT_MAX_POLL_MS = 2 * 60 * 60 * 1000
 const SELECTED_SUFFIX = /(?:-|_)已选$/u
 const IMAGE_FILE_EXTENSIONS = new Set(['.avif', '.gif', '.jpeg', '.jpg', '.png', '.webp'])
-const SUPPORTED_ASSET_TYPES = new Set(['character', 'scene', 'shot'])
+const SUPPORTED_ASSET_TYPES = new Set(['character', 'scene', 'location', 'shot'])
 // H3 accepts up to 20k prompt characters. Reserve room below that limit so
 // inherited project context cannot make a saved shot prompt un-runnable.
 export const MAX_SHOT_VIDEO_BRIEF_CHARS = 12_000
@@ -231,9 +231,21 @@ function characterSourceForShot(snapshot, shot, scene, warnings) {
   return { character, source: look ?? character, hasMultipleCharacters: activeCharacterPaths.size > 1 }
 }
 
+function selectedLocationImageForShot(snapshot, shot, scene, errors) {
+  for (const binding of scene?.locationBindings ?? []) {
+    if (!binding?.locationPath || !isShotInBindingRange(shot.design.shotId, binding)) continue
+    const location = (snapshot.locations ?? []).find(item => item.rootPath === binding.locationPath)
+    if (!location) continue
+    const image = selectedSlotImage(location, ['setting', 'reference', 'candidate'], errors)
+    if (image) return image
+  }
+  return undefined
+}
+
 function findWorkspaceAsset(snapshot, assetType, assetPath) {
   if (assetType === 'character') return snapshot.characters.find(item => item.rootPath === assetPath)
   if (assetType === 'scene') return snapshot.scenes.find(item => item.rootPath === assetPath)
+  if (assetType === 'location') return snapshot.locations.find(item => item.rootPath === assetPath)
   return snapshot.shots.find(item => !item.isDraft && item.rootPath === assetPath)
 }
 
@@ -327,6 +339,9 @@ function derivePrompt(asset, assetType, look) {
   }
   if (assetType === 'scene') {
     return { prompt: String(asset.sceneContent ?? '').trim(), negativePrompt: '' }
+  }
+  if (assetType === 'location') {
+    return { prompt: String(asset.profileContent ?? '').trim(), negativePrompt: '' }
   }
   return {
     prompt: String(asset.design.prompt || asset.design.content || '').trim(),
@@ -513,13 +528,16 @@ function deriveUploads(snapshot, asset, assetType, look, preset, warnings, error
     add('referenceImage', selectedCharacterVisual(source, preferredSlots, errors))
   } else if (assetType === 'scene') {
     add('referenceImage', selectedSlotImage(asset, ['reference', 'setting', 'firstFrame', 'lastFrame'], errors))
+  } else if (assetType === 'location') {
+    add('referenceImage', selectedSlotImage(asset, ['reference', 'setting'], errors))
   } else {
     const scene = findSceneForShot(snapshot, asset)
     const characterSource = characterSourceForShot(snapshot, asset, scene, warnings)
     const characterImage = characterSource
       ? selectedCharacterVisual(characterSource.source, ['turnaround', 'costume', 'reference'], errors)
       : undefined
-    const sceneImage = scene
+    const locationImage = selectedLocationImageForShot(snapshot, asset, scene, errors)
+    const legacySceneImage = scene
       ? selectedSlotImage(scene, ['setting', 'reference', 'firstFrame', 'lastFrame'], errors)
       : undefined
     const shotReference = selectedSlotImage(asset, ['reference', 'candidate'], errors)
@@ -529,17 +547,18 @@ function deriveUploads(snapshot, asset, assetType, look, preset, warnings, error
       errors.push('当前镜头关联了多个人物，但这个工作流只支持单张人物参考。请先只保留一位出场角色，或改用支持多人参考图的工作流。')
     }
     if (preset.id === 'shot-first-frame-img2img-v1') {
-      const reference = shotReference ?? sceneImage ?? characterImage
+      const reference = shotReference ?? locationImage ?? legacySceneImage ?? characterImage
       add('referenceImage', reference)
       if (reference && reference === shotReference) warnings.push('首帧图生图将使用当前镜头已选参考图。')
-      else if (reference && reference === sceneImage) warnings.push('首帧图生图将使用当前场次已选场景图。')
+      else if (reference && reference === locationImage) warnings.push('首帧图生图将使用当前场次地点/环境的已选场景图。')
+      else if (reference && reference === legacySceneImage) warnings.push('首帧图生图将使用当前场次已选场景图。')
       else if (reference && reference === characterImage) warnings.push('首帧图生图将使用本镜头出场人物的已选视觉图。')
     } else if (preset.id === 'shot-last-frame-img2img-v1') {
       add('referenceImage', firstFrame)
       if (firstFrame) warnings.push('尾帧图生图将使用当前镜头已选首帧。')
     } else {
       add('characterReference', characterImage)
-      add('sceneReference', sceneImage)
+      add('sceneReference', locationImage ?? legacySceneImage)
       add('referenceImage', shotReference)
       add('firstFrame', firstFrame)
       add('lastFrame', lastFrame)
@@ -549,7 +568,7 @@ function deriveUploads(snapshot, asset, assetType, look, preset, warnings, error
   for (const definition of preset.uploadRoles) {
     if (!definition.required || uploads.some(item => item.role === definition.role)) continue
     if (preset.id === 'shot-first-frame-img2img-v1') {
-      errors.push('镜头首帧图生图需要一张已选输入图。请先选择镜头参考图或场次场景图；单人物镜头也可使用人物已选视觉图。')
+      errors.push('镜头首帧图生图需要一张已选输入图。请先选择镜头参考图或地点/环境已选场景图；单人物镜头也可使用人物已选视觉图。')
     } else if (preset.id === 'shot-last-frame-img2img-v1') {
       errors.push('镜头尾帧图生图需要当前镜头的已选首帧。请先生成或上传首帧并设为“已选”。')
     } else {
@@ -1213,7 +1232,7 @@ export function createComfyApi(state, options = {}) {
       if (url.pathname === `${API_PREFIX}/jobs` && req.method === 'GET') {
         const assetPath = requireText(url.searchParams.get('assetPath'), '资产路径', { maximum: 1_024 })
         const snapshot = await withProjectRoot(root, () => getAssetWorkspaceSnapshot())
-        if (!['character', 'scene', 'shot'].some(type => findWorkspaceAsset(snapshot, type, assetPath))) {
+        if (!['character', 'scene', 'location', 'shot'].some(type => findWorkspaceAsset(snapshot, type, assetPath))) {
           throw new ComfyApiError(404, '当前资产不存在或不属于活动项目。')
         }
         await resumeRemoteJobs(root)

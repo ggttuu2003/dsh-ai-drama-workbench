@@ -2889,28 +2889,10 @@ function serializeSceneDocument(sceneId: string, source?: ShotSource): string {
   ].join("\n");
 }
 
-function isUnconfiguredSceneDocument(content: string): boolean {
-  const remaining = content
-    .replace(/^# .*场次资产\s*$/gmu, "")
-    .replace(/^## 场次说明\s*$/gmu, "")
-    .replace(/^- \*\*来源脚本：\*\*.*$/gmu, "")
-    .replace(/^- \*\*制作状态：\*\* 待准备\s*$/gmu, "")
-    .replace(/^- \*\*说明：\*\* 在这里补充本场的空间关系、统一视觉、连续性和交付要求。\s*$/gmu, "")
-    .trim();
-  return !remaining;
-}
-
-function serializeSceneImagePrompt(sceneId: string, shot: ShotAsset, sourcePath?: string): string {
+function serializeSceneLocationPrompt(sceneId: string, shot: ShotAsset): string {
   const prompt = (shot.design.prompt || shot.design.content || "").trim();
-  const sourceLabel = [shot.design.shotId, shot.design.title].filter(Boolean).join(" · ");
   return [
-    `# ${validateNewName(sceneId)} 场次资产`,
-    "",
-    "## 场次说明",
-    "",
-    ...(sourcePath ? [`- **来源脚本：** ${sourcePath}`] : []),
-    "- **制作状态：** 待准备",
-    ...(sourceLabel ? [`- **自动来源镜头：** ${sourceLabel}`] : []),
+    `# ${validateNewName(sceneId)}场景设定`,
     "",
     "## 场景图提示词",
     "",
@@ -3145,10 +3127,69 @@ export async function createSceneAsset(sceneId: string): Promise<string> {
   return relativePath;
 }
 
+async function ensureSceneLocationAsset(sceneId: string): Promise<{ location: LocationAsset; created: boolean }> {
+  const safeSceneId = validateNewName(sceneId);
+  const locationPath = path.posix.join("场景", safeSceneId);
+  let snapshot = await getAssetWorkspaceSnapshot();
+  const existing = snapshot.locations.find((asset) => asset.rootPath === locationPath);
+  if (existing) return { location: existing, created: false };
+
+  let created = false;
+  try {
+    await createLocationAsset(safeSceneId);
+    created = true;
+  } catch (error) {
+    // A concurrent request may have created the same reusable asset first.
+    snapshot = await getAssetWorkspaceSnapshot();
+    const concurrent = snapshot.locations.find((asset) => asset.rootPath === locationPath);
+    if (!concurrent) throw error;
+    return { location: concurrent, created: false };
+  }
+
+  snapshot = await getAssetWorkspaceSnapshot();
+  const location = snapshot.locations.find((asset) => asset.rootPath === locationPath);
+  if (!location) throw new ProjectPathError("地点/环境资产已建立，但无法读取其设定。");
+  return { location, created };
+}
+
+async function ensureSceneLocationBinding(scenePath: string, locationPath: string): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const snapshot = await getAssetWorkspaceSnapshot();
+    const scene = snapshot.scenes.find((asset) => asset.rootPath === scenePath);
+    if (!scene) throw new ProjectPathError("当前场次资产已不存在。");
+    if (scene.locationBindings.some((binding) => binding.locationPath === locationPath)) return;
+
+    try {
+      await updateSceneAssetBindings(
+        scene.rootPath,
+        {
+          locations: [
+            ...scene.locationBindings,
+            {
+              locationPath,
+              role: "主环境",
+              state: "",
+              continuity: "",
+              startShotId: "",
+              endShotId: "",
+            },
+          ],
+          props: scene.propBindings,
+        },
+        scene.assetBindingsRevision,
+      );
+      return;
+    } catch (error) {
+      if (error instanceof ProjectConflictError && attempt === 0) continue;
+      throw error;
+    }
+  }
+}
+
 /**
- * Makes the current shot's saved visual brief immediately usable as a scene
- * image prompt. Existing scene writing always wins; only the untouched
- * scaffold is replaced so a later shot cannot overwrite an authored scene.
+ * Prepares a reusable project-level environment for the current shot. The
+ * storyboard scene only stores its reference to the environment; its scene
+ * document is never repurposed as an image-prompt scratchpad.
  */
 export async function prepareSceneImageFromShot(shotPath: string): Promise<string> {
   const verifiedShot = await getVerifiedWorkspaceAsset("shot", shotPath);
@@ -3158,17 +3199,16 @@ export async function prepareSceneImageFromShot(shotPath: string): Promise<strin
   if (!prompt) throw new ProjectPathError("请先保存镜头画面或提示词，再生成场景图。");
 
   const scenePath = await createSceneAsset(shot.design.sceneId);
-  const snapshot = await getAssetWorkspaceSnapshot();
-  const scene = snapshot.scenes.find((asset) => asset.rootPath === scenePath);
-  if (!scene?.scenePath) throw new ProjectPathError("场次资产已建立，但无法读取场次说明。");
-  if (!isUnconfiguredSceneDocument(scene.sceneContent || "")) return scenePath;
-
-  await updateSceneDocument(
-    scene.rootPath,
-    serializeSceneImagePrompt(scene.sceneId, shot, scene.sourcePath || shot.sourcePath),
-    scene.sceneRevision,
-  );
-  return scenePath;
+  const { location, created } = await ensureSceneLocationAsset(shot.design.sceneId);
+  if (created) {
+    await updateLocationDocument(
+      location.rootPath,
+      serializeSceneLocationPrompt(shot.design.sceneId, shot),
+      location.profileRevision,
+    );
+  }
+  await ensureSceneLocationBinding(scenePath, location.rootPath);
+  return location.rootPath;
 }
 
 async function createSimpleDocumentAsset(

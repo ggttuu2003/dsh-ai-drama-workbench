@@ -20,6 +20,7 @@ import {
   setCharacterVisualSelection,
   setWorkspaceVisualSelection,
   updateProjectSettings,
+  updateLocationDocument,
   updateSceneAssetBindings,
   updateSceneCastBindings,
   updateSceneDocument,
@@ -400,6 +401,39 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
     ])
     assert.ok(firstFrameImageToImage.payload.preview.warnings.some(message => message.includes('场次已选场景图')))
 
+    await withProjectRoot(root, async () => {
+      const locationPath = await createLocationAsset('测试地点')
+      const current = await getAssetWorkspaceSnapshot()
+      const currentScene = current.scenes.find(item => item.rootPath === scene.rootPath)
+      assert.ok(currentScene)
+      await updateSceneAssetBindings(currentScene.rootPath, {
+        locations: [...currentScene.locationBindings, {
+          locationPath,
+          role: '主环境',
+          state: '',
+          continuity: '',
+          startShotId: 'SH001',
+          endShotId: 'SH001',
+        }],
+        props: currentScene.propBindings,
+      }, currentScene.assetBindingsRevision)
+      await saveAssetUploadStream('location', locationPath, 'setting', '地点场景图-01.png', Readable.from([PIXEL_PNG]))
+      await setWorkspaceVisualSelection('location', locationPath, 'setting', '地点场景图-01.png')
+    })
+    const locationFirstFrameImageToImage = await call(api, jsonRequest({
+      assetType: 'shot',
+      assetPath: shot.rootPath,
+      presetId: 'shot-first-frame-img2img-v1',
+      profileId: 'mock-cloud',
+      options: { width: '1280', height: '720', denoise: '0.6' },
+    }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
+    assert.equal(locationFirstFrameImageToImage.status, 200)
+    assert.equal(locationFirstFrameImageToImage.payload.preview.errors.length, 0)
+    assert.deepEqual(locationFirstFrameImageToImage.payload.preview.attachments, [
+      { role: '首帧输入图', name: '地点场景图-01-已选.png' },
+    ])
+    assert.ok(locationFirstFrameImageToImage.payload.preview.warnings.some(message => message.includes('地点/环境')))
+
     const lastFrameWithoutFirstFrame = await call(api, jsonRequest({
       assetType: 'shot',
       assetPath: shot.rootPath,
@@ -516,6 +550,65 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
     assert.equal(switched.status, 200)
     assert.equal(switched.payload.activeProfileId, 'standby-cloud')
     assert.equal(JSON.stringify(switched.payload).includes('local-test-token'), false)
+  } finally {
+    await bridge.close()
+    await rm(temporary, { recursive: true, force: true })
+  }
+})
+
+test('ComfyUI API generates reusable location scene images and lists their jobs', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'dsh-ai-drama-comfy-location-'))
+  const root = await realpath(temporary)
+  const configPath = path.join(temporary, 'private-comfy.json')
+  const state = { root: async () => root }
+  const bridge = await startMockBridge()
+  const api = createComfyApi(state, { configPath, pollIntervalMs: 5, maxPollMs: 2_000 })
+
+  try {
+    await saveMockConfig(configPath, bridge.url)
+    const locationPath = await withProjectRoot(root, async () => {
+      const created = await createLocationAsset('焦土尽头')
+      const snapshot = await getAssetWorkspaceSnapshot()
+      const location = snapshot.locations.find(item => item.rootPath === created)
+      assert.ok(location)
+      await updateLocationDocument(
+        created,
+        '# 焦土尽头场景设定\n\n## 基础设定\n\n末日焦土、断壁残垣和低垂铅云，远处没有现代建筑。\n',
+        location.profileRevision,
+      )
+      return created
+    })
+    const body = {
+      assetType: 'location',
+      assetPath: locationPath,
+      presetId: 'scene-image-v1',
+      profileId: 'mock-cloud',
+      options: { width: '1536', height: '864' },
+    }
+
+    const preview = await call(api, jsonRequest(body), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
+    assert.equal(preview.status, 200)
+    assert.equal(preview.payload.preview.outputSlotLabel, '场景图')
+    assert.equal(preview.payload.preview.errors.length, 0)
+    assert.deepEqual(preview.payload.preview.attachments, [])
+
+    const submission = await call(api, jsonRequest(body), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs')
+    assert.equal(submission.status, 202)
+    const completed = await waitFor(async () => {
+      const listed = await call(api, getRequest(), `http://127.0.0.1/ai-drama/workbench/comfy/jobs?assetPath=${encodeURIComponent(locationPath)}`)
+      assert.equal(listed.status, 200)
+      const job = listed.payload.jobs.find(item => item.id === submission.payload.job.id)
+      if (job?.status === 'failed') throw new Error(`Location scene image job failed: ${job.error || 'unknown error'}`)
+      return job?.status === 'completed' ? job : undefined
+    })
+
+    assert.equal(bridge.received.jobs.length, 1)
+    assert.equal(bridge.received.jobs[0].workflowId, 'image-generate')
+    assert.match(bridge.received.jobs[0].inputs.prompt, /末日焦土、断壁残垣/u)
+    assert.deepEqual(bridge.received.jobs[0].uploads, [])
+    assert.equal(completed.outputPaths.length, 1)
+    assert.match(completed.outputPaths[0], /^场景\/焦土尽头\/场景图\/.+\.png$/u)
+    assert.deepEqual(await readFile(path.join(root, ...completed.outputPaths[0].split('/'))), PIXEL_PNG)
   } finally {
     await bridge.close()
     await rm(temporary, { recursive: true, force: true })

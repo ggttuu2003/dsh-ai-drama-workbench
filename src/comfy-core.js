@@ -65,6 +65,15 @@ const ASSET_SLOT_DEFINITIONS = deepFreeze({
       video: { directory: '成片', label: '成片', mediaKinds: ['video'] },
     },
   },
+  location: {
+    markerFile: '场景设定.md',
+    slots: {
+      setting: { directory: '场景图', label: '场景图', mediaKinds: ['image'] },
+      reference: { directory: '参考图', label: '参考图', mediaKinds: ['image'] },
+      candidate: { directory: '候选', label: '候选', mediaKinds: ['image', 'video'] },
+      final: { directory: '定稿', label: '定稿', mediaKinds: ['image', 'video'] },
+    },
+  },
   shot: {
     markerFile: '镜头.md',
     slots: {
@@ -107,7 +116,13 @@ const WORKFLOW_PRESETS = deepFreeze([
     referenceImagesEnabled: false,
     defaults: { width: 1536, height: 864 },
     // 场景图资料槽本身就是候选池；人工从中标记一张“已选”作为场景参考。
-    output: { kind: 'image', targetSlots: [{ assetType: 'scene', slot: 'setting' }] },
+    output: {
+      kind: 'image',
+      targetSlots: [
+        { assetType: 'scene', slot: 'setting' },
+        { assetType: 'location', slot: 'setting' },
+      ],
+    },
     inputs: standardImageInputs(),
     uploadRoles: [{ role: 'referenceImage', required: false, mediaKind: 'image' }],
   },
@@ -362,6 +377,9 @@ function normalizeAssetTarget(value) {
   }
   if (assetType === 'scene' && (pathSegments.length !== 2 || pathSegments[0] !== '分镜')) {
     throw new ComfyJobError('Scene output must target one direct child of 分镜.')
+  }
+  if (assetType === 'location' && (pathSegments.length !== 2 || pathSegments[0] !== '场景')) {
+    throw new ComfyJobError('Location output must target one direct child of 场景.')
   }
   if (assetType === 'shot' && (pathSegments.length !== 3 || pathSegments[0] !== '分镜')) {
     throw new ComfyJobError('Shot output must target a direct shot folder under 分镜.')

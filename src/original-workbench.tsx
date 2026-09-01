@@ -1744,7 +1744,7 @@ function GenerationModal({
                 </div> : null}
                 <details className="generation-advanced"><summary><span>高级参数</span><small>Seed 留空则随机</small></summary><TextField label="Seed" onChange={setSeed} value={seed} /></details>
                 {isVideo && activePreset?.id === "h3-first-last-video-v1" ? <div className="generation-mode-note"><strong>首尾帧模式</strong><span>上传已选首帧和尾帧；分辨率与 24 fps 沿用你的原始工作流，时长会由工作流自动对齐到 H3 所需帧数。</span></div> : null}
-                {!isVideo && activePreset?.referenceImagesEnabled ? <div className="generation-mode-note"><strong>当前模式：图生图</strong><span>{activePreset.id === "shot-last-frame-img2img-v1" ? "固定读取当前镜头已选首帧，生成尾帧候选。" : "优先读取镜头已选参考图，其次读取场次已选场景图，再其次读取单人物已选视觉图。"}</span></div> : null}
+                {!isVideo && activePreset?.referenceImagesEnabled ? <div className="generation-mode-note"><strong>当前模式：图生图</strong><span>{activePreset.id === "shot-last-frame-img2img-v1" ? "固定读取当前镜头已选首帧，生成尾帧候选。" : "优先读取镜头已选参考图，其次读取地点/环境已选场景图，再其次读取单人物已选视觉图。"}</span></div> : null}
                 {!isVideo && !activePreset?.referenceImagesEnabled ? <div className="generation-mode-note"><strong>当前模式：纯文生图</strong><span>已选三视图、定妆和参考图不会自动上传。需要图生图时，请先配置独立的图生图工作流。</span></div> : null}
               </section>
             </div>
@@ -1842,7 +1842,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   const [shotDesignMode, setShotDesignMode] = useState<"preview" | "edit">("preview");
   const [activeShotWorkflowStep, setActiveShotWorkflowStep] = useState<ShotWorkflowStepId>("design");
   const [generationTarget, setGenerationTarget] = useState<WorkspaceSelectionAsset | null>(null);
-  const [pendingSceneGenerationPath, setPendingSceneGenerationPath] = useState<string | null>(null);
+  const [pendingSceneImageLocationPath, setPendingSceneImageLocationPath] = useState<string | null>(null);
   const [generationPresetId, setGenerationPresetId] = useState<string | undefined>();
   const [generationDurationSeconds, setGenerationDurationSeconds] = useState<string | undefined>();
   const workflowShotRootRef = useRef<string | null>(null);
@@ -2138,6 +2138,18 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     }
     return [...effective.values()];
   }, [designDraft.characterOverrides, inheritedSceneCastForSelectedShot]);
+  const effectiveLocationAssetsForSelectedShot = useMemo(() => {
+    if (selectedAsset?.type !== "shot" || !activeScene?.scene) return [];
+    const seen = new Set<string>();
+    return sceneLocationBindings(activeScene.scene)
+      .filter((binding) => bindingAppliesToShot(binding, selectedAsset.design.shotId))
+      .flatMap((binding) => {
+        if (seen.has(binding.locationPath)) return [];
+        seen.add(binding.locationPath);
+        const location = locationAssets.find((asset) => asset.rootPath === binding.locationPath);
+        return location ? [location] : [];
+      });
+  }, [activeScene?.scene, locationAssets, selectedAsset]);
   const inheritedLocationsForSelectedShot = useMemo(() => {
     if (selectedAsset?.type !== "shot" || !activeScene?.scene) return [];
     return sceneLocationBindings(activeScene.scene)
@@ -2163,7 +2175,13 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   const selectedShotFirstFrame = selectedShotFirstFrameSlot ? selectedSlotVisual(selectedShotFirstFrameSlot) : undefined;
   const selectedShotLastFrame = selectedShotLastFrameSlot ? selectedSlotVisual(selectedShotLastFrameSlot) : undefined;
   const hasSelectedShotReference = Boolean(selectedAsset?.type === "shot" && hasSingleSelectedSlotVisual(selectedAsset, "reference"));
-  const hasSelectedSceneReference = Boolean(activeScene?.scene && ["setting", "reference", "firstFrame", "lastFrame"].some((key) => hasSingleSelectedSlotVisual(activeScene.scene!, key)));
+  const hasSelectedLocationReference = effectiveLocationAssetsForSelectedShot.some((location) => (
+    ["setting", "reference", "candidate"].some((key) => hasSingleSelectedSlotVisual(location, key))
+  ));
+  // Project-level location visuals supersede the legacy scene-folder slots.
+  const hasSelectedSceneReference = hasSelectedLocationReference || Boolean(
+    activeScene?.scene && ["setting", "reference", "firstFrame", "lastFrame"].some((key) => hasSingleSelectedSlotVisual(activeScene.scene!, key)),
+  );
   const hasSelectedCharacterReference = effectiveCastForSelectedShot.some((entry) => {
     const character = characterByPath.get(entry.characterPath);
     const look = getLookForPath(character, entry.lookPath);
@@ -2394,16 +2412,16 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   }, []);
 
   useEffect(() => {
-    if (!pendingSceneGenerationPath) return;
-    const scene = sceneAssets.find((asset) => asset.rootPath === pendingSceneGenerationPath);
-    if (!scene) return;
-    setPendingSceneGenerationPath(null);
-    setGenerationTarget(scene);
+    if (!pendingSceneImageLocationPath) return;
+    const location = locationAssets.find((asset) => asset.rootPath === pendingSceneImageLocationPath);
+    if (!location) return;
+    setPendingSceneImageLocationPath(null);
+    setGenerationTarget(location);
     setGenerationDurationSeconds(undefined);
     setGenerationPresetId("scene-image-v1");
     setModal("generation");
-    notify("success", "已准备本场场景资产");
-  }, [notify, pendingSceneGenerationPath, sceneAssets]);
+    notify("success", "场景资产已准备并关联");
+  }, [locationAssets, notify, pendingSceneImageLocationPath]);
 
   const handleGenerationJobsObserved = useCallback((assetPath: string, jobs: ComfyJob[]) => {
     const result = reconcileComfyJobWatches(generationJobWatchesRef.current, assetPath, jobs);
@@ -3444,9 +3462,9 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
         action: "prepareSceneImageFromShot",
         shotPath: selectedAsset.rootPath,
       });
-      if (!result.path) throw new Error("无法建立当前场次资产");
-      if (!(await loadSnapshot(true))) throw new Error("场次资产已建立，但刷新失败。请重试。");
-      setPendingSceneGenerationPath(result.path);
+      if (!result.path) throw new Error("无法准备场景资产");
+      if (!(await loadSnapshot(true))) throw new Error("场景资产已准备，但刷新失败。请重试。");
+      setPendingSceneImageLocationPath(result.path);
     } catch (error) {
       notify("error", error instanceof Error ? error.message : "无法准备场景图");
     } finally {
@@ -3567,7 +3585,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
             {selectedAsset ? <div className="asset-studio-actions">
               {isDirty || selectedAsset.type === "shot" && selectedAsset.isDraft ? <span className={`asset-state-pill ${isDirty ? "is-dirty" : ""}`}>{isDirty ? "未保存" : "待导入"}</span> : null}
               {selectedAsset.type === "shot" && selectedShotIndex >= 0 ? <div className="shot-stepper" aria-label="镜头导航"><span>{String(selectedShotIndex + 1).padStart(2, "0")} / {String(activeShotAssets.length).padStart(2, "0")}</span><button aria-label="上一个镜头" disabled={busy || selectedShotIndex === 0} onClick={() => moveSelectedShot(-1)} type="button">‹</button><button aria-label="下一个镜头" disabled={busy || selectedShotIndex === activeShotAssets.length - 1} onClick={() => moveSelectedShot(1)} type="button">›</button></div> : null}
-              {selectedAsset.type !== "location" && selectedAsset.type !== "prop" && selectedAsset.type !== "shot" ? <button className="studio-action-button generation-open-button" disabled={busy} onClick={() => void openGeneration()} type="button">生成</button> : null}
+              {selectedAsset.type === "character" || selectedAsset.type === "location" ? <button className="studio-action-button generation-open-button" disabled={busy} onClick={() => void openGeneration()} type="button">生成</button> : null}
               {selectedAsset.type !== "shot" || !selectedAsset.isDraft ? <>
                 {selectedAsset.type !== "scene" ? <button className="studio-action-button" disabled={busy} onClick={openRename} type="button">重命名</button> : null}
                 <button className="studio-action-button is-danger" disabled={busy} onClick={() => setModal("trash")} type="button">移入回收站</button>

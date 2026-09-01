@@ -129,7 +129,7 @@ test('full workbench compatibility API reads and writes only its active temporar
   }
 })
 
-test('a shot can prepare its scene image asset without overwriting an authored scene brief', async () => {
+test('a shot prepares and binds a reusable location scene image asset without changing the scene brief', async () => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'dsh-ai-drama-scene-image-api-'))
   const root = await realpath(temporaryRoot)
   const state = { root: async () => root }
@@ -163,19 +163,30 @@ test('a shot can prepare its scene image asset without overwriting an authored s
       shotPath: shot.payload.path,
     }), 'http://127.0.0.1/ai-drama/workbench/assets')
     assert.equal(prepared.status, 200)
-    assert.equal(prepared.payload.path, '分镜/EP001-SC020')
+    assert.equal(prepared.payload.path, '场景/EP001-SC020')
 
     const seeded = await call(state, getRequest(), 'http://127.0.0.1/ai-drama/workbench/project')
-    const scene = seeded.payload.scenes.find(asset => asset.rootPath === prepared.payload.path)
+    const location = seeded.payload.locations.find(asset => asset.rootPath === prepared.payload.path)
+    const scene = seeded.payload.scenes.find(asset => asset.sceneId === 'EP001-SC020')
+    assert.ok(location)
     assert.ok(scene)
-    assert.match(scene.sceneContent, /场景图提示词/u)
-    assert.match(scene.sceneContent, /末日焦土/u)
+    assert.match(location.profileContent, /场景图提示词/u)
+    assert.match(location.profileContent, /末日焦土/u)
+    assert.doesNotMatch(scene.sceneContent, /末日焦土/u)
+    assert.deepEqual(scene.locationBindings, [{
+      locationPath: prepared.payload.path,
+      role: '主环境',
+      state: '',
+      continuity: '',
+      startShotId: '',
+      endShotId: '',
+    }])
 
     const saved = await call(state, jsonRequest({
-      action: 'updateSceneDocument',
-      assetPath: scene.rootPath,
-      content: '# EP001-SC020 场次资产\n\n用户维护的场景说明。',
-      expectedRevision: scene.sceneRevision,
+      action: 'updateLocationDocument',
+      assetPath: location.rootPath,
+      content: '# EP001-SC020场景设定\n\n用户维护的环境说明。',
+      expectedRevision: location.profileRevision,
     }), 'http://127.0.0.1/ai-drama/workbench/assets')
     assert.equal(saved.status, 200)
 
@@ -184,10 +195,13 @@ test('a shot can prepare its scene image asset without overwriting an authored s
       shotPath: shot.payload.path,
     }), 'http://127.0.0.1/ai-drama/workbench/assets')
     assert.equal(preparedAgain.status, 200)
+    assert.equal(preparedAgain.payload.path, prepared.payload.path)
     const preserved = await call(state, getRequest(), 'http://127.0.0.1/ai-drama/workbench/project')
-    const preservedScene = preserved.payload.scenes.find(asset => asset.rootPath === prepared.payload.path)
-    assert.match(preservedScene.sceneContent, /用户维护的场景说明/u)
-    assert.doesNotMatch(preservedScene.sceneContent, /末日焦土/u)
+    const preservedLocation = preserved.payload.locations.find(asset => asset.rootPath === prepared.payload.path)
+    const preservedScene = preserved.payload.scenes.find(asset => asset.sceneId === 'EP001-SC020')
+    assert.match(preservedLocation.profileContent, /用户维护的环境说明/u)
+    assert.doesNotMatch(preservedLocation.profileContent, /末日焦土/u)
+    assert.equal(preservedScene.locationBindings.filter(binding => binding.locationPath === prepared.payload.path).length, 1)
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true })
   }

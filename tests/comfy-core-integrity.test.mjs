@@ -10,9 +10,10 @@ import {
   archiveComfyOutput,
   createComfyJob,
   createDefaultComfyConfig,
+  getComfyWorkflowPresets,
   transitionComfyJob,
 } from '../src/comfy-core.js'
-import { createCharacterAsset, withProjectRoot } from '../lib/workspace-core.js'
+import { createCharacterAsset, createLocationAsset, withProjectRoot } from '../lib/workspace-core.js'
 
 const OUTPUT = Buffer.from('verified Comfy output')
 const OUTPUT_SHA256 = createHash('sha256').update(OUTPUT).digest('hex')
@@ -26,6 +27,12 @@ test('Comfy archive verifies bridge size/checksum before publishing and starts w
     assert.deepEqual(defaultConfig.profiles.map(profile => profile.id), ['cloud-a', 'cloud-b'])
     assert.ok(defaultConfig.profiles.every(profile => !profile.enabled && !profile.token && !profile.bridgeUrl))
     assert.ok(defaultConfig.profiles.every(profile => profile.downloadTimeoutMs === 30 * 60 * 1_000))
+    const sceneImagePreset = getComfyWorkflowPresets().find(preset => preset.id === 'scene-image-v1')
+    assert.deepEqual(sceneImagePreset?.assetTypes, ['scene', 'location'])
+    assert.deepEqual(sceneImagePreset?.outputTargets, [
+      { assetType: 'scene', slot: 'setting', outputSlotLabel: '场景图' },
+      { assetType: 'location', slot: 'setting', outputSlotLabel: '场景图' },
+    ])
 
     const characterPath = await withProjectRoot(root, () => createCharacterAsset('完整性测试人物'))
     const job = createComfyJob({
@@ -97,6 +104,34 @@ test('Comfy archive verifies bridge size/checksum before publishing and starts w
     const files = await readdir(path.join(root, '主要人物', '完整性测试人物', '三视图'))
     assert.equal(files.length, 1)
     assert.ok(files[0].endsWith('.png'))
+
+    const locationPath = await withProjectRoot(root, () => createLocationAsset('完整性测试场景'))
+    const locationJob = createComfyJob({
+      profileId: 'cloud-a',
+      workflowId: 'scene-image-v1',
+      inputs: { prompt: 'test reusable location', width: 1536, height: 864 },
+      target: { assetType: 'location', assetPath: locationPath, slot: 'setting' },
+    })
+    const locationOutput = await archiveComfyOutput({
+      projectRoot: root,
+      job: locationJob,
+      remoteFileName: 'location.png',
+      data: OUTPUT,
+      expectedBytes: OUTPUT.length,
+      expectedSha256: OUTPUT_SHA256,
+    })
+    assert.match(locationOutput.path, /^场景\/完整性测试场景\/场景图\//u)
+    assert.deepEqual(await readFile(path.join(root, ...locationOutput.path.split('/'))), OUTPUT)
+
+    assert.throws(
+      () => createComfyJob({
+        profileId: 'cloud-a',
+        workflowId: 'scene-image-v1',
+        inputs: { prompt: 'invalid location target' },
+        target: { assetType: 'location', assetPath: '分镜/EP001-SC001', slot: 'setting' },
+      }),
+      /Location output must target one direct child of 场景/u,
+    )
 
     let lifecycle = createComfyJob({
       profileId: 'cloud-a',
