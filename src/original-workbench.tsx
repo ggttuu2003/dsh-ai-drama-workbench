@@ -26,20 +26,7 @@ import type {
 type Snapshot = AssetWorkspaceSnapshot & { error?: string };
 type ProjectBoundSnapshot = Snapshot & { projectId?: string };
 type ActiveTab = "characters" | "locations" | "props" | "shots";
-type ModalKind = "character" | "location" | "prop" | "look" | "scene" | "shot" | "rename" | "trash" | "trashList" | "import" | "generation" | "projectSettings" | "ssh" | null;
-
-type SshConnection = {
-  configured: boolean;
-  name: string;
-  host: string;
-  port: number;
-  user: string;
-  identityFile: string;
-  localPort: number;
-  remoteHost: string;
-  remotePort: number;
-  status: { state: string; label: string; detail?: string };
-};
+type ModalKind = "character" | "location" | "prop" | "look" | "scene" | "shot" | "rename" | "trash" | "trashList" | "import" | "generation" | "projectSettings" | null;
 
 type ImportSourceGroup = {
   sourcePath: string;
@@ -107,41 +94,6 @@ function normalizeSnapshot(value: unknown): ProjectBoundSnapshot {
     shots: arrayField<ShotAsset>("shots"),
     updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : new Date().toISOString(),
   } as ProjectBoundSnapshot;
-}
-
-function SshSettingsModal({ busy, connection, error, onClose, onRefresh, onSave, onStart, onStop }: {
-  busy: boolean;
-  connection: SshConnection | null;
-  error: string | null;
-  onClose: () => void;
-  onRefresh: () => void;
-  onSave: (value: SshConnection) => void;
-  onStart: (value: SshConnection) => void;
-  onStop: () => void;
-}) {
-  const [draft, setDraft] = useState<SshConnection | null>(connection);
-  useEffect(() => setDraft(connection), [connection]);
-  if (!draft) return <div className="modal-backdrop"><section aria-modal="true" className="modal-card asset-modal ssh-modal" role="dialog"><p className="modal-copy">正在读取云服务器设置…</p></section></div>;
-  const set = (key: keyof SshConnection, value: string) => setDraft({ ...draft, [key]: value });
-  const connected = connection?.status.state === "connected";
-  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section aria-labelledby="ssh-modal-title" aria-modal="true" className="modal-card asset-modal ssh-modal" role="dialog">
-      <div className="modal-heading"><div><p className="eyebrow">本机 SSH 隧道</p><h2 id="ssh-modal-title">云服务器连接</h2></div><button aria-label="关闭" className="icon-button" onClick={onClose} type="button">×</button></div>
-      <div className={`ssh-status is-${connection?.status.state ?? "unconfigured"}`}><span aria-hidden="true" /><div><strong>{connection?.status.label ?? "未配置"}</strong><small>{connection?.status.detail || (connected ? `127.0.0.1:${connection?.localPort} 已转发到云端服务` : "连接通过本机 ssh 进程建立")}</small></div></div>
-      <div className="ssh-form">
-        <label className="asset-field"><span>连接名称</span><input onChange={(event) => set("name", event.target.value)} value={draft.name} /></label>
-        <label className="asset-field"><span>服务器地址</span><input onChange={(event) => set("host", event.target.value)} placeholder="example.com" value={draft.host} /></label>
-        <label className="asset-field"><span>SSH 用户名</span><input onChange={(event) => set("user", event.target.value)} placeholder="ubuntu" value={draft.user} /></label>
-        <label className="asset-field"><span>SSH 端口</span><input inputMode="numeric" onChange={(event) => set("port", event.target.value)} value={String(draft.port)} /></label>
-        <label className="asset-field ssh-form-wide"><span>私钥文件路径（可选）</span><input onChange={(event) => set("identityFile", event.target.value)} placeholder="/Users/you/.ssh/id_ed25519" value={draft.identityFile} /></label>
-        <label className="asset-field"><span>本地转发端口</span><input inputMode="numeric" onChange={(event) => set("localPort", event.target.value)} value={String(draft.localPort)} /></label>
-        <label className="asset-field"><span>云端服务地址</span><input onChange={(event) => set("remoteHost", event.target.value)} value={draft.remoteHost} /></label>
-        <label className="asset-field"><span>云端服务端口</span><input inputMode="numeric" onChange={(event) => set("remotePort", event.target.value)} value={String(draft.remotePort)} /></label>
-      </div>
-      {error ? <p className="ssh-error">{error}</p> : null}
-      <div className="modal-actions"><button className="text-button" disabled={busy} onClick={onRefresh} type="button">刷新状态</button><button className="text-button" disabled={busy} onClick={() => onSave(draft)} type="button">保存设置</button>{connected ? <button className="submit-button destructive" disabled={busy} onClick={onStop} type="button">断开连接</button> : <button className="submit-button" disabled={busy || !draft.host || !draft.user} onClick={() => onStart(draft)} type="button">启动连接</button>}</div>
-    </section>
-  </div>;
 }
 
 const EMPTY_DESIGN: ShotDesign = {

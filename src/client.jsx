@@ -228,20 +228,32 @@ function ShadowWorkbench() {
 }
 
 function SshSettings({ connection, error, busy, onClose, onRefresh, onSave, onStart, onStop }) {
-  const emptyConnection = { name: '云服务器', host: '', port: 22, user: '', identityFile: '', localPort: 8188, remoteHost: '127.0.0.1', remotePort: 8188 }
+  const emptyConnection = { name: '云服务器', host: '', port: 22, user: '', localPort: 8188, remoteHost: '127.0.0.1', remotePort: 8188 }
   const [draft, setDraft] = useState(connection || emptyConnection)
+  const [password, setPassword] = useState('')
   useEffect(() => { if (connection) setDraft(connection) }, [connection])
   const update = (key, value) => setDraft(current => ({ ...current, [key]: ['port', 'localPort', 'remotePort'].includes(key) ? Number(value) : value }))
   const connected = connection?.status?.state === 'connected'
+  const start = () => {
+    try { onStart({ ...draft, password }) } finally { setPassword('') }
+  }
+  const save = () => {
+    const config = { ...draft }
+    delete config.password
+    setPassword('')
+    onSave(config)
+  }
   return <div className="adw-ssh-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
     <section aria-labelledby="adw-ssh-title" aria-modal="true" className="adw-ssh-panel" role="dialog">
       <div className="adw-ssh-heading"><div><small>本机 SSH 隧道</small><h2 id="adw-ssh-title">云服务器连接</h2></div><button aria-label="关闭云服务器设置" onClick={onClose} type="button">×</button></div>
       <div className={`adw-ssh-status is-${connection?.status?.state || 'unconfigured'}`}><i /> <div><strong>{connection?.status?.label || (error ? '无法读取状态' : '正在读取设置…')}</strong><span>{connection?.status?.detail || (connected ? `127.0.0.1:${connection.localPort} 已建立转发` : error || '保存配置后可以直接启动 SSH 隧道')}</span></div></div>
       <div className="adw-ssh-grid">
-        {[["name", "连接名称", "云服务器"], ["host", "服务器地址", "example.com"], ["user", "SSH 用户名", "ubuntu"], ["port", "SSH 端口", "22"], ["identityFile", "私钥文件路径（可选）", "/Users/you/.ssh/id_ed25519"], ["localPort", "本地转发端口", "8188"], ["remoteHost", "云端服务地址", "127.0.0.1"], ["remotePort", "云端服务端口", "8188"]].map(([key, label, placeholder]) => <label className={key === 'identityFile' ? 'adw-ssh-field is-wide' : 'adw-ssh-field'} key={key}><span>{label}</span><input onChange={event => update(key, event.target.value)} placeholder={placeholder} type={['port', 'localPort', 'remotePort'].includes(key) ? 'number' : 'text'} value={draft[key] ?? ''} /></label>)}
+        <label className="adw-ssh-field is-wide"><span>SSH 密码（仅本次连接使用）</span><input autoComplete="off" onChange={event => setPassword(event.target.value)} placeholder="请输入服务器密码" type="password" value={password} /></label>
+        {[["name", "连接名称", "云服务器"], ["host", "服务器地址", "example.com"], ["user", "SSH 用户名", "ubuntu"], ["port", "SSH 端口", "22"], ["localPort", "本地转发端口", "8188"], ["remoteHost", "云端服务地址", "127.0.0.1"], ["remotePort", "云端服务端口", "8188"]].map(([key, label, placeholder]) => <label className="adw-ssh-field" key={key}><span>{label}</span><input onChange={event => update(key, event.target.value)} placeholder={placeholder} type={['port', 'localPort', 'remotePort'].includes(key) ? 'number' : 'text'} value={draft[key] ?? ''} /></label>)}
       </div>
+      <p className="adw-ssh-secret-note">此连接仅使用 SSH 密码认证，已禁用公钥、SSH agent 和复用连接。密码不会写入配置文件或返回给页面。</p>
       {error ? <p className="adw-ssh-error" role="alert">{error}</p> : null}
-      <div className="adw-ssh-actions"><button disabled={busy} onClick={onRefresh} type="button">刷新状态</button><button disabled={busy} onClick={() => onSave(draft)} type="button">保存设置</button>{connected ? <button className="is-danger" disabled={busy} onClick={onStop} type="button">断开连接</button> : <button className="is-primary" disabled={busy || !draft.host || !draft.user} onClick={() => onStart(draft)} type="button">启动连接</button>}</div>
+      <div className="adw-ssh-actions"><button disabled={busy} onClick={onRefresh} type="button">刷新状态</button><button disabled={busy} onClick={save} type="button">保存设置</button>{connected ? <button className="is-danger" disabled={busy} onClick={onStop} type="button">断开连接</button> : <button className="is-primary" disabled={busy || !draft.host || !draft.user || !password} onClick={start} type="button">启动连接</button>}</div>
     </section>
   </div>
 }
