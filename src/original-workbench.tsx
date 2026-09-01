@@ -3176,41 +3176,52 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       {notice ? <div aria-live="polite" className={`notice notice-${notice.tone}`} role={notice.tone === "error" ? "alert" : "status"}><span aria-hidden="true">{notice.tone === "success" ? "✓" : "!"}</span>{notice.text}<button aria-label="关闭提示" onClick={() => setNotice(null)} type="button">×</button></div> : null}
 
       <div className="asset-workspace-grid">
-        <aside className="asset-library-rail">
-          <div className="asset-rail-heading"><p className="eyebrow">分镜主工作流</p><h1>制作</h1></div>
-          <div className="asset-tabs" role="tablist" aria-label="制作与资产库">
+        <aside className="workspace-navigation">
+          <div className="workspace-navigation-heading"><p className="eyebrow">工作区</p><h1>制作台</h1></div>
+          <div className="asset-tabs" role="tablist" aria-label="工作区导航">
+            <p className="navigation-section-label">分镜生产</p>
             <button aria-controls="asset-list-panel" aria-selected={activeTab === "shots"} className={`is-primary-tab ${activeTab === "shots" ? "is-active" : ""}`} id="shots-tab" onClick={() => changeTab("shots")} role="tab" tabIndex={activeTab === "shots" ? 0 : -1} type="button"><span>分镜</span><b>{sceneGroups.length}</b></button>
+            <p className="navigation-section-label">项目资产</p>
             <button aria-controls="asset-list-panel" aria-selected={activeTab === "characters"} className={activeTab === "characters" ? "is-active" : ""} id="characters-tab" onClick={() => changeTab("characters")} role="tab" tabIndex={activeTab === "characters" ? 0 : -1} type="button"><span>人物</span><b>{characterAssets.length}</b></button>
             <button aria-controls="asset-list-panel" aria-selected={activeTab === "locations"} className={activeTab === "locations" ? "is-active" : ""} id="locations-tab" onClick={() => changeTab("locations")} role="tab" tabIndex={activeTab === "locations" ? 0 : -1} type="button"><span>地点/环境</span><b>{locationAssets.length}</b></button>
             <button aria-controls="asset-list-panel" aria-selected={activeTab === "props"} className={activeTab === "props" ? "is-active" : ""} id="props-tab" onClick={() => changeTab("props")} role="tab" tabIndex={activeTab === "props" ? 0 : -1} type="button"><span>道具</span><b>{propAssets.length}</b></button>
+          </div>
+        </aside>
+
+        <aside className="asset-browser">
+          <div className="asset-browser-heading">
+            <div>
+              <p className="eyebrow">{activeTab === "shots" ? "分镜生产" : "项目资产"}</p>
+              <h2>{activeTab === "characters" ? "人物" : activeTab === "locations" ? "地点/环境" : activeTab === "props" ? "道具" : "场次与镜头"}</h2>
+            </div>
+            {activeTab === "characters" || activeTab === "locations" || activeTab === "props" ? <button aria-label="新建资产" className="add-asset-button" onClick={openCreate} type="button"><span aria-hidden="true">＋</span><b>新建</b></button> : <button aria-label="新建场次" className="add-asset-button" onClick={openCreateScene} type="button"><span aria-hidden="true">＋</span><b>场次</b></button>}
           </div>
           {activeTab === "shots" ? <div className="scene-scope">
             <SelectField
               ariaLabel="选择场次"
               className="scene-picker"
               disabled={!sceneGroups.length}
-              label="当前场次"
+              label="场次"
               onChange={(sceneId) => {
                 changeScene(sceneId);
               }}
               options={sceneGroups.map((scene) => ({ label: `${scene.sceneId} · ${scene.shots.length} 镜头`, value: scene.sceneId }))}
               value={activeScene?.sceneId || ""}
             />
-            {activeScene ? <small>{sceneGroups.length} 场 · 当前 {activeScene.shots.length} 镜头{activeScene.draftCount ? ` · ${activeScene.draftCount} 待导入` : ""}</small> : <small>还没有可用场次</small>}
           </div> : null}
-          <div className="asset-list-tools"><div className="asset-search"><span aria-hidden="true">⌕</span><input aria-label={activeTab === "characters" ? "搜索人物" : activeTab === "locations" ? "搜索地点/环境" : activeTab === "props" ? "搜索道具" : "搜索当前场次镜头"} onChange={(event) => changeSearch(event.target.value)} placeholder={activeTab === "characters" ? "搜索人物" : activeTab === "locations" ? "搜索地点/环境" : activeTab === "props" ? "搜索道具" : "搜索当前场次镜头"} value={search} />{search ? <button aria-label="清空搜索" className="asset-search-clear" onClick={() => changeSearch("")} type="button">×</button> : null}</div>{activeTab === "characters" || activeTab === "locations" || activeTab === "props" ? <button aria-label="新建资产" className="add-asset-button" onClick={openCreate} type="button"><span aria-hidden="true">＋</span><b>新建</b></button> : <div className="scene-create-actions"><button aria-label="新建场次" className="add-asset-button is-secondary" onClick={openCreateScene} type="button"><span aria-hidden="true">＋</span><b>场次</b></button><button aria-label="新建镜头" className="add-asset-button" onClick={openCreate} type="button"><span aria-hidden="true">＋</span><b>镜头</b></button></div>}</div>
-          {activeTab === "shots" ? <button className="import-storyboard-button" disabled={busy || !activeDraftGroups.length} onClick={openStoryboardImport} type="button"><span aria-hidden="true">⇣</span>导入当前场次剧本{activeDraftGroups.length ? <b>{activeDraftGroups.reduce((total, group) => total + group.shots.length, 0)}</b> : null}</button> : null}
+          <div className="asset-list-tools"><div className="asset-search"><span aria-hidden="true">⌕</span><input aria-label={activeTab === "characters" ? "搜索人物" : activeTab === "locations" ? "搜索地点/环境" : activeTab === "props" ? "搜索道具" : "搜索当前场次镜头"} onChange={(event) => changeSearch(event.target.value)} placeholder="搜索" value={search} />{search ? <button aria-label="清空搜索" className="asset-search-clear" onClick={() => changeSearch("")} type="button">×</button> : null}</div>{activeTab === "shots" ? <button aria-label="新建镜头" className="add-asset-button" onClick={openCreate} type="button"><span aria-hidden="true">＋</span><b>镜头</b></button> : null}</div>
+          {activeTab === "shots" ? <button className="import-storyboard-button" disabled={busy || !activeDraftGroups.length} onClick={openStoryboardImport} type="button"><span aria-hidden="true">⇣</span>导入剧本{activeDraftGroups.length ? <b>{activeDraftGroups.reduce((total, group) => total + group.shots.length, 0)}</b> : null}</button> : null}
           {activeTab === "shots" && activeScene?.scene ? <div className="scene-asset-summary"><SceneAssetCard active={assetKey(activeScene.scene) === selectedKey} onClick={() => selectAsset(assetKey(activeScene.scene!))} scene={activeScene.scene} /></div> : activeTab === "shots" && activeScene ? <button className="scene-asset-create-note" disabled={busy} onClick={() => void handleCreateScene(activeScene.sceneId)} type="button"><span>当前场次还没有独立资料文件夹</span><b>建立场次资产</b></button> : null}
-          <div className="asset-list-heading"><span>{activeTab === "characters" ? "资产库 · 人物" : activeTab === "locations" ? "资产库 · 地点/环境" : activeTab === "props" ? "资产库 · 道具" : activeScene ? "当前场次镜头列表" : "全部分镜"}</span><small>{activeTab === "characters" ? `${characterAssets.length} 个` : activeTab === "locations" ? `${locationAssets.length} 个` : activeTab === "props" ? `${propAssets.length} 个` : `${activeShotAssets.length} 个`}</small></div>
+          <div className="asset-list-heading"><span>{activeTab === "shots" ? "镜头" : "全部"}</span><small>{activeTab === "characters" ? `${characterAssets.length}` : activeTab === "locations" ? `${locationAssets.length}` : activeTab === "props" ? `${propAssets.length}` : `${activeShotAssets.length}`}</small></div>
           <div aria-labelledby={`${activeTab}-tab`} className="asset-card-list" id="asset-list-panel" role="tabpanel">
-            {loading ? <div className="asset-list-empty">正在整理资产…</div> : snapshot?.error ? <div className="asset-list-empty error-copy">{snapshot.error}</div> : visibleAssets.length ? visibleAssets.map((asset) => <AssetCard active={assetKey(asset) === selectedKey} asset={asset} key={assetKey(asset)} onClick={() => selectAsset(assetKey(asset))} sceneReferenceCount={asset.type === "location" || asset.type === "prop" ? sceneReferenceCounts.get(asset.rootPath) : undefined} />) : <div className="asset-list-empty"><strong>{search ? "没有匹配资产" : activeTab === "characters" ? "还没有人物" : activeTab === "locations" ? "还没有地点/环境" : activeTab === "props" ? "还没有道具" : "当前场次还没有镜头"}</strong><span>{search ? "换个名称或关键词试试。" : activeTab === "shots" ? "点击“场次”或“镜头”开始分镜生产。" : "点击“新建”建立第一个资产。"}</span></div>}
+            {loading ? <div className="asset-list-empty">加载中…</div> : snapshot?.error ? <div className="asset-list-empty error-copy">{snapshot.error}</div> : visibleAssets.length ? visibleAssets.map((asset) => <AssetCard active={assetKey(asset) === selectedKey} asset={asset} key={assetKey(asset)} onClick={() => selectAsset(assetKey(asset))} sceneReferenceCount={asset.type === "location" || asset.type === "prop" ? sceneReferenceCounts.get(asset.rootPath) : undefined} />) : <div className="asset-list-empty"><strong>{search ? "没有匹配结果" : activeTab === "characters" ? "还没有人物" : activeTab === "locations" ? "还没有地点/环境" : activeTab === "props" ? "还没有道具" : "还没有镜头"}</strong></div>}
           </div>
         </aside>
 
         <section className="asset-studio-column">
           <div className={`asset-studio-head asset-studio-toolbar ${selectedAsset?.type === "character" ? "is-character-studio" : ""} ${selectedAsset?.type === "scene" ? "is-scene-studio" : ""}`}>
             <div>
-              <p className="asset-breadcrumb">{selectedAsset?.type === "location" ? "资产库 / 地点/环境" : selectedAsset?.type === "prop" ? "资产库 / 道具" : activeTab === "characters" ? selectedAsset?.type === "character" ? `资产库 / 人物 / ${selectedAsset.roleCategory}` : "资产库 / 人物" : activeScene ? `分镜 / 场次（分镜生产容器） / ${activeScene.sceneId}` : "分镜 / 资产"}</p>
+              <p className="asset-breadcrumb">{selectedAsset?.type === "location" ? "项目资产 / 地点/环境" : selectedAsset?.type === "prop" ? "项目资产 / 道具" : activeTab === "characters" ? "项目资产 / 人物" : activeScene ? `分镜 / ${activeScene.sceneId}` : "分镜"}</p>
               <div className="asset-title-row">
                 <h2>{selectedAsset ? displayWorkspaceAssetTitle(selectedAsset) : "选择一个资产开始"}</h2>
                 {selectedAsset?.type === "character" ? <span
@@ -3222,7 +3233,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                   {selectedAsset.roleCategory}
                 </span> : null}
               </div>
-              {activeTab === "shots" && activeScene ? <p className="studio-context">场次（分镜生产容器） · {activeScene.shots.length} 个镜头 · 按镜号顺序</p> : null}
+              {activeTab === "shots" && activeScene ? <p className="studio-context">{activeScene.shots.length} 个镜头</p> : null}
             </div>
             {selectedAsset ? <div className="asset-studio-actions">
               {isDirty || selectedAsset.type === "shot" && selectedAsset.isDraft ? <span className={`asset-state-pill ${isDirty ? "is-dirty" : ""}`}>{isDirty ? "未保存" : "待导入"}</span> : null}
@@ -3244,7 +3255,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
           {!selectedAsset ? <div className="studio-empty"><span className="studio-empty-symbol">◇</span><h3>从左侧选择创作对象</h3><p>这里会显示角色设定、三视图、镜头设计和对应资料槽。</p></div> : selectedAsset.type === "character" ? (
             <div className={`character-editor ${selectedCharacterVisualSet.length ? "has-character-visuals" : ""}`}>
               <section className="character-look-switcher" aria-label="人物造型选择">
-                <div><p className="eyebrow">人物造型</p><h3>{selectedCharacterVisualSource?.isIdentity ? "身份基准" : selectedCharacterVisualSource?.label || "选择造型"}</h3><p>身份资料不随服装变化；每套造型独立保存候选三视图、定妆和参考图。</p></div>
+                <div><p className="eyebrow">人物造型</p><h3>{selectedCharacterVisualSource?.isIdentity ? "身份基准" : selectedCharacterVisualSource?.label || "选择造型"}</h3></div>
                 <div className="character-look-switcher-actions">
                   <SelectField
                     ariaLabel="选择人物造型"
@@ -3259,8 +3270,8 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
               </section>
               <div className="character-work-area">
                 <div className="character-copy-column">
-                  {selectedCharacterLook ? <section className="editor-card look-document-editor"><div className="editor-card-heading"><div><p className="eyebrow">当前造型</p><h3>{selectedCharacterLook.id} · {selectedCharacterLook.name}</h3></div><div className="editor-card-heading-actions"><button aria-pressed={lookMode === "edit"} className="editor-mode-button" onClick={() => setLookMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{lookMode === "preview" ? "编辑" : "预览"}</button><button className="save-button" disabled={busy || lookDraft === (selectedCharacterLook.documentContent || "")} onClick={() => void handleSaveLook()} type="button">{busy ? "处理中…" : lookDraft === (selectedCharacterLook.documentContent || "") ? "已保存" : "保存造型"}</button></div></div>{lookMode === "preview" ? <ProfilePreview content={lookDraft} /> : <textarea aria-label={`${selectedCharacterLook.name}造型设定`} className="profile-textarea" onChange={(event) => { setLookDraft(event.target.value); setLookMode("edit"); }} placeholder="补充服装、妆发、固定道具和跨镜头连续性…" value={lookDraft} />}<p className="editor-hint">这一页只描述当前服装与状态；人物分类、脸部和身份仍在“角色设定”中维护。</p></section> : null}
-                  <section className="editor-card profile-editor"><div className="editor-card-heading"><div><p className="eyebrow">身份资料</p><h3>角色设定</h3></div><div className="editor-card-heading-actions"><button aria-pressed={profileMode === "edit"} className="editor-mode-button" onClick={() => setProfileMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{profileMode === "preview" ? "编辑" : "预览"}</button><button className="save-button" disabled={busy || profileDraft === (selectedAsset.profileContent || "")} onClick={() => void handleSave()} type="button">{busy ? "处理中…" : profileDraft === (selectedAsset.profileContent || "") ? "已保存" : "保存设定"}</button></div></div>{profileMode === "preview" ? <ProfilePreview content={profileDraft} /> : <textarea aria-label={`${selectedAsset.name}角色设定`} className="profile-textarea" onChange={(event) => { setProfileDraft(event.target.value); setProfileMode("edit"); }} placeholder="补充人物身份、外形、服装和表演设定…" value={profileDraft} />}<p className="editor-hint">角色分类只从本文件解析；要修改分类，请在 Markdown 中编辑“角色分类”后保存并刷新。</p></section>
+                  {selectedCharacterLook ? <section className="editor-card look-document-editor"><div className="editor-card-heading"><div><p className="eyebrow">当前造型</p><h3>{selectedCharacterLook.id} · {selectedCharacterLook.name}</h3></div><div className="editor-card-heading-actions"><button aria-pressed={lookMode === "edit"} className="editor-mode-button" onClick={() => setLookMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{lookMode === "preview" ? "编辑" : "预览"}</button><button className="save-button" disabled={busy || lookDraft === (selectedCharacterLook.documentContent || "")} onClick={() => void handleSaveLook()} type="button">{busy ? "处理中…" : lookDraft === (selectedCharacterLook.documentContent || "") ? "已保存" : "保存造型"}</button></div></div>{lookMode === "preview" ? <ProfilePreview content={lookDraft} /> : <textarea aria-label={`${selectedCharacterLook.name}造型设定`} className="profile-textarea" onChange={(event) => { setLookDraft(event.target.value); setLookMode("edit"); }} placeholder="补充服装、妆发、固定道具和跨镜头连续性…" value={lookDraft} />}</section> : null}
+                  <section className="editor-card profile-editor"><div className="editor-card-heading"><div><p className="eyebrow">身份资料</p><h3>角色设定</h3></div><div className="editor-card-heading-actions"><button aria-pressed={profileMode === "edit"} className="editor-mode-button" onClick={() => setProfileMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{profileMode === "preview" ? "编辑" : "预览"}</button><button className="save-button" disabled={busy || profileDraft === (selectedAsset.profileContent || "")} onClick={() => void handleSave()} type="button">{busy ? "处理中…" : profileDraft === (selectedAsset.profileContent || "") ? "已保存" : "保存设定"}</button></div></div>{profileMode === "preview" ? <ProfilePreview content={profileDraft} /> : <textarea aria-label={`${selectedAsset.name}角色设定`} className="profile-textarea" onChange={(event) => { setProfileDraft(event.target.value); setProfileMode("edit"); }} placeholder="补充人物身份、外形、服装和表演设定…" value={profileDraft} />}</section>
                 </div>
                 <div className="character-media-column">
                   {selectedCharacterVisualSet.length && selectedCharacterVisualSource ? <CharacterVisualBoard characterName={selectedAsset.name} onPreview={setMediaPreview} sourceLabel={selectedCharacterVisualSource.label} visuals={selectedCharacterVisualSet} /> : null}
@@ -3300,7 +3311,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                 </div>
                 {sceneMode === "preview" ? <ProfilePreview content={sceneDraft} /> : <textarea aria-label={`${selectedAsset.name}设定`} className="profile-textarea" onChange={(event) => { setSceneDraft(event.target.value); setSceneMode("edit"); }} placeholder={selectedAsset.type === "location" ? "补充空间关系、光线、时代和连续性要求…" : "补充道具用途、材质、尺寸、磨损和连续性要求…"} value={sceneDraft} />}
               </section>
-              <section className="slot-section"><div className="section-heading"><div><p className="eyebrow">制作资料</p><h3>{selectedAsset.type === "location" ? "地点/环境资料槽" : "道具资料槽"}</h3></div><span>上传真实素材，并在候选图中选择当前参考</span></div><p className="asset-library-managed-note">由分镜场次统一管理引用关系 · 当前资产被 {sceneReferenceCounts.get(selectedAsset.rootPath) || 0} 个场次引用</p><div className="slot-grid scene-slot-grid">{selectedAsset.slots.map((slot) => <SlotPanel confirmedFile={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot) : undefined} confirmedSourcePath={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot)?.path : undefined} disabled={busy} key={slot.key} onPreview={setMediaPreview} onSetConfirmed={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? (file) => void handleSetWorkspaceVisualSelection(slot, file) : undefined} onTrash={(file) => void handleTrashFile(slot, file)} onUpload={(files) => void handleUpload(slot, files)} slot={slot} />)}</div></section>
+              <section className="slot-section"><div className="section-heading"><div><p className="eyebrow">制作资料</p><h3>{selectedAsset.type === "location" ? "地点/环境资料" : "道具资料"}</h3></div></div><p className="asset-library-managed-note">{sceneReferenceCounts.get(selectedAsset.rootPath) || 0} 个场次使用</p><div className="slot-grid scene-slot-grid">{selectedAsset.slots.map((slot) => <SlotPanel confirmedFile={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot) : undefined} confirmedSourcePath={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot)?.path : undefined} disabled={busy} key={slot.key} onPreview={setMediaPreview} onSetConfirmed={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? (file) => void handleSetWorkspaceVisualSelection(slot, file) : undefined} onTrash={(file) => void handleTrashFile(slot, file)} onUpload={(files) => void handleUpload(slot, files)} slot={slot} />)}</div></section>
             </div>
           ) : selectedAsset.type === "scene" ? (
             <div className="scene-editor">
@@ -3308,8 +3319,8 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
               <section className="editor-card scene-document-editor">
                 <div className="editor-card-heading">
                   <div>
-                    <p className="eyebrow">大分镜资料</p>
-                    <h3>场次说明</h3>
+                    <p className="eyebrow">场次</p>
+                    <h3>场次设定</h3>
                   </div>
                   {selectedAsset.scenePath ? <div className="editor-card-heading-actions">
                     <button aria-pressed={sceneMode === "edit"} className="editor-mode-button" onClick={() => setSceneMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{sceneMode === "preview" ? "编辑" : "预览"}</button>
@@ -3318,11 +3329,9 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                 </div>
                 {!selectedAsset.scenePath ? <div className="scene-setup-empty">
                   <strong>这个场次还没有独立资料文件夹</strong>
-                  <p>补齐后会创建“场次.md”以及地点/环境图、参考图、首帧、尾帧、候选、定稿和成片资料槽；原始分镜脚本不会被改写。</p>
                   <button className="save-button primary" disabled={busy} onClick={() => void handleCreateScene(selectedAsset.sceneId)} type="button">{busy ? "建立中…" : "补齐场次资产"}</button>
                 </div> : <>
                   {sceneMode === "preview" ? <ProfilePreview content={sceneDraft} /> : <textarea aria-label={`${selectedAsset.sceneId}场次说明`} className="profile-textarea" onChange={(event) => { setSceneDraft(event.target.value); setSceneMode("edit"); }} placeholder="补充本场的空间关系、统一视觉、连续性和交付要求…" value={sceneDraft} />}
-                  <p className="editor-hint">这里记录整场统一要求；具体镜头的动作和提示词仍在各自的“镜头.md”中。</p>
                   {!selectedAsset.isComplete ? <button className="scene-complete-button" disabled={busy} onClick={() => void handleCreateScene(selectedAsset.sceneId)} type="button">补齐场次资料（含出场与造型表）</button> : null}
                 </>}
               </section>
@@ -3331,7 +3340,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                   <div><p className="eyebrow">出场与造型</p><h3>本场默认人物</h3></div>
                   <div className="scene-cast-actions"><button className="studio-action-button" disabled={busy || !characterAssets.length} onClick={addSceneCastBinding} type="button">添加人物</button><button className="save-button" disabled={busy || JSON.stringify(sceneCastDraft) === JSON.stringify(selectedAsset.castBindings)} onClick={() => void handleSaveSceneCast()} type="button">{busy ? "处理中…" : JSON.stringify(sceneCastDraft) === JSON.stringify(selectedAsset.castBindings) ? "已保存" : "保存绑定"}</button></div>
                 </div>
-                <p className="scene-cast-intro">先给整个场次确定角色和服装；镜头默认继承，只有临时换装、受伤或局部状态才在镜头内覆盖。</p>
                 {sceneCastDraft.length ? <div className="scene-cast-list">{sceneCastDraft.map((binding, index) => {
                   const character = characterByPath.get(binding.characterPath);
                   const lookOptions = [
@@ -3348,22 +3356,20 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                     </div>
                     <div className="scene-cast-row-notes"><TextField label="人物状态" onChange={(state) => updateSceneCastBinding(index, { state })} placeholder="如：衣袍完整、闭眼静止" value={binding.state} /><TextField label="连续性" onChange={(continuity) => updateSceneCastBinding(index, { continuity })} placeholder="如：左肩铁链始终绕向背部" value={binding.continuity} /></div>
                   </article>;
-                })}</div> : <div className="scene-cast-empty"><strong>尚未绑定本场人物</strong><p>先添加角色和默认造型，后续镜头就能直接继承。</p></div>}
+                })}</div> : <div className="scene-cast-empty"><strong>尚未绑定人物</strong></div>}
               </section> : null}
               <section className="scene-cast-editor scene-asset-bindings" aria-label="本场引用资产">
                 <div className="section-heading">
-                  <div><p className="eyebrow">分镜生产容器</p><h3>本场引用资产</h3></div>
+                  <div><p className="eyebrow">场次资产</p><h3>引用资产</h3></div>
                   <div className="scene-cast-actions">
                     <button className="studio-action-button" disabled={busy || !locationAssets.length} onClick={addSceneLocationBinding} type="button">添加地点/环境</button>
                     <button className="studio-action-button" disabled={busy || !propAssets.length} onClick={addScenePropBinding} type="button">添加道具</button>
                     <button className="save-button" disabled={busy || !hasUnsavedSceneAssetBindings} onClick={() => void handleSaveSceneAssetBindings()} type="button">{busy ? "处理中…" : hasUnsavedSceneAssetBindings ? "保存引用" : "已保存"}</button>
                   </div>
                 </div>
-                <p className="scene-cast-intro">地点/环境与道具保留在项目资产库中；本场只记录引用、用途和连续性，镜头在设定的范围内继承。</p>
-                <p className="scene-asset-binding-hint">起止镜号留空表示覆盖全场；填写时必须使用当前场次已有的镜号。</p>
                 <div className="scene-asset-binding-categories">
                   <div className="scene-asset-binding-category">
-                    <div className="scene-asset-binding-category-heading"><strong>地点/环境</strong><small>空间、环境和主视觉基底</small></div>
+                    <div className="scene-asset-binding-category-heading"><strong>地点/环境</strong></div>
                     {selectedSceneAssetBindings.locations.length ? <div className="scene-cast-list">{selectedSceneAssetBindings.locations.map((binding, index) => <article className="scene-cast-row" key={`location-${index}`}>
                       <div className="scene-cast-row-head"><strong>地点/环境 {String(index + 1).padStart(2, "0")}</strong><button aria-label={`移除第 ${index + 1} 条地点/环境绑定`} className="asset-file-remove" disabled={busy} onClick={() => removeSceneLocationBinding(index)} type="button">×</button></div>
                       <div className="scene-cast-row-grid">
@@ -3373,10 +3379,10 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                         <TextField label="结束镜号" onChange={(endShotId) => updateSceneLocationBinding(index, { endShotId })} placeholder="留空表示到尾镜" value={binding.endShotId} />
                       </div>
                       <div className="scene-cast-row-notes"><TextField label="状态" onChange={(state) => updateSceneLocationBinding(index, { state })} placeholder="如：雨后、夜景、门扉关闭" value={binding.state} /><TextField label="连续性" onChange={(continuity) => updateSceneLocationBinding(index, { continuity })} placeholder="如：火把始终在画面左侧" value={binding.continuity} /></div>
-                    </article>)}</div> : <div className="scene-cast-empty"><strong>尚未绑定地点/环境</strong><p>从项目资产库选择本场需要的空间或环境，原始地点资料不会被复制。</p></div>}
+                    </article>)}</div> : <div className="scene-cast-empty"><strong>尚未绑定地点/环境</strong></div>}
                   </div>
                   <div className="scene-asset-binding-category">
-                    <div className="scene-asset-binding-category-heading"><strong>道具</strong><small>关键物件、线索和连续性道具</small></div>
+                    <div className="scene-asset-binding-category-heading"><strong>道具</strong></div>
                     {selectedSceneAssetBindings.props.length ? <div className="scene-cast-list">{selectedSceneAssetBindings.props.map((binding, index) => <article className="scene-cast-row" key={`prop-${index}`}>
                       <div className="scene-cast-row-head"><strong>道具 {String(index + 1).padStart(2, "0")}</strong><button aria-label={`移除第 ${index + 1} 条道具绑定`} className="asset-file-remove" disabled={busy} onClick={() => removeScenePropBinding(index)} type="button">×</button></div>
                       <div className="scene-cast-row-grid">
@@ -3386,7 +3392,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                         <TextField label="结束镜号" onChange={(endShotId) => updateScenePropBinding(index, { endShotId })} placeholder="留空表示到尾镜" value={binding.endShotId} />
                       </div>
                       <div className="scene-cast-row-notes"><TextField label="状态" onChange={(state) => updateScenePropBinding(index, { state })} placeholder="如：出鞘、沾血、破损" value={binding.state} /><TextField label="连续性" onChange={(continuity) => updateScenePropBinding(index, { continuity })} placeholder="如：始终由右手持有" value={binding.continuity} /></div>
-                    </article>)}</div> : <div className="scene-cast-empty"><strong>尚未绑定道具</strong><p>只在本场需要的道具建立引用，避免为每个分镜重复复制同一主档。</p></div>}
+                    </article>)}</div> : <div className="scene-cast-empty"><strong>尚未绑定道具</strong></div>}
                   </div>
                 </div>
               </section>
@@ -3411,7 +3417,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                   </div>
                   <section className="shot-character-plan">
                     <div className="section-heading"><div><p className="eyebrow">人物与造型</p><h3>本镜头引用</h3></div><button className="studio-action-button" disabled={busy || !characterAssets.length} onClick={addShotCharacterOverride} type="button">添加覆盖</button></div>
-                    <p className="shot-character-plan-intro">默认继承本场的人物和造型；这里仅记录某个镜头的换装或局部状态例外。</p>
                     {inheritedSceneCastForSelectedShot.length ? <div className="shot-inherited-cast" aria-label="继承的场次人物与造型">{inheritedSceneCastForSelectedShot.map((binding) => {
                       const character = characterByPath.get(binding.characterPath);
                       const look = getLookForPath(character, binding.lookPath);
@@ -3420,7 +3425,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                         {preview && isImage(preview) ? <button aria-label={`查看${character?.name || "人物"}当前造型`} className="shot-inherited-cast-image" onClick={() => setMediaPreview(preview)} type="button"><img alt={`${character?.name || "人物"}造型参考`} src={mediaUrl(preview)} /></button> : <span className="shot-inherited-cast-mark">人</span>}
                         <div><strong>{character?.name || displayFileName(binding.characterPath)}</strong><small>{displayLookLabel(character, binding.lookPath)} · {formatBindingRange(binding)}</small>{binding.state ? <em>{binding.state}</em> : null}</div>
                       </article>;
-                    })}</div> : <div className="shot-inherited-empty">本场尚未设置默认人物与造型。可先回到场次资料完成绑定，或在这里添加一次性覆盖。</div>}
+                    })}</div> : <div className="shot-inherited-empty">未继承人物</div>}
                     {(designDraft.characterOverrides ?? []).length ? <div className="shot-character-override-list">{(designDraft.characterOverrides ?? []).map((override, index) => {
                       const character = characterByPath.get(override.characterPath);
                       const hasInheritedBinding = inheritedSceneCastForSelectedShot.some((binding) => binding.characterPath === override.characterPath);
@@ -3463,11 +3468,10 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                       <TextField label="负面提示词" multiline onChange={(value) => setDesignDraft((draft) => ({ ...draft, negativePrompt: value }))} value={designDraft.negativePrompt} />
                     </div>
                   </details>
-                  <p className="editor-hint">场次和镜号固定；如需改标题，请使用右上角“重命名”。</p>
                 </>}
               </section>
               {selectedSourcePath ? <section className="source-context-card"><div className="source-context-heading"><div><p className="eyebrow">来源上下文</p><h3>{displayFileName(selectedSourcePath)}</h3><small title={selectedSourcePath}>原始分镜脚本</small></div><button className="source-context-toggle" disabled={sourceContext.loading} onClick={() => void toggleSourceContext()} type="button">{sourceContextOpen ? "收起原文" : sourceContext.error && sourceContext.path === selectedSourcePath ? "重新读取" : "查看原文"}</button></div>{sourceContextOpen ? <div className="source-context-body">{sourceContext.path !== selectedSourcePath || sourceContext.loading ? <p>正在读取原始剧本…</p> : sourceContext.error ? <p className="source-context-error">{sourceContext.error}</p> : <pre>{sourceContext.content || "原始剧本为空。"}</pre>}</div> : null}</section> : null}
-              {selectedAsset.isDraft ? <section className="draft-asset-note"><p className="eyebrow">下一步</p><p>建立镜头资产后，可添加参考图、首帧、尾帧和候选资料。</p></section> : <section className="slot-section"><div className="section-heading"><div><p className="eyebrow">制作资料</p><h3>镜头资料槽</h3></div><span>首帧、尾帧和候选分别管理</span></div><div className="slot-grid shot-slots">{selectedAsset.slots.map((slot) => <SlotPanel confirmedFile={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot) : undefined} confirmedSourcePath={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot)?.path : undefined} disabled={busy} key={slot.key} onPreview={setMediaPreview} onSetConfirmed={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? (file) => void handleSetWorkspaceVisualSelection(slot, file) : undefined} onTrash={(file) => void handleTrashFile(slot, file)} onUpload={(files) => void handleUpload(slot, files)} slot={slot} />)}</div></section>}
+              {selectedAsset.isDraft ? null : <section className="slot-section"><div className="section-heading"><div><p className="eyebrow">制作资料</p><h3>镜头资料</h3></div></div><div className="slot-grid shot-slots">{selectedAsset.slots.map((slot) => <SlotPanel confirmedFile={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot) : undefined} confirmedSourcePath={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot)?.path : undefined} disabled={busy} key={slot.key} onPreview={setMediaPreview} onSetConfirmed={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? (file) => void handleSetWorkspaceVisualSelection(slot, file) : undefined} onTrash={(file) => void handleTrashFile(slot, file)} onUpload={(files) => void handleUpload(slot, files)} slot={slot} />)}</div></section>}
             </div>
           )}
         </section>

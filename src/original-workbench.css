@@ -5313,6 +5313,194 @@ summary:focus-visible {
   padding: 0 10px;
 }
 
+/* Navigation only lives in the first rail. Browsing and creation get their
+   own column so the production hierarchy stays visible. */
+.asset-workspace-grid {
+  grid-template-columns: 168px 286px minmax(0, 1fr);
+}
+
+.workspace-navigation,
+.asset-browser {
+  min-width: 0;
+}
+
+.workspace-navigation {
+  background: var(--ash);
+  border-right: 1px solid var(--border);
+  height: calc(100vh - 54px);
+  padding: 18px 12px;
+  position: sticky;
+  top: 54px;
+}
+
+.workspace-navigation-heading {
+  padding: 0 5px 16px;
+}
+
+.workspace-navigation-heading h1 {
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.035em;
+  margin: 2px 0 0;
+}
+
+.asset-tabs {
+  background: transparent;
+  border: 0;
+  display: grid;
+  gap: 2px;
+  grid-template-columns: 1fr;
+  padding: 0;
+}
+
+.navigation-section-label {
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  margin: 11px 4px 3px;
+  padding-top: 11px;
+}
+
+.navigation-section-label:first-child {
+  border-top: 0;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.asset-tabs button,
+.asset-tabs button.is-primary-tab {
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font-size: 12px;
+  height: 34px;
+  padding: 0 8px;
+}
+
+.asset-tabs button.is-active,
+.asset-tabs button.is-primary-tab.is-active {
+  background: var(--paper);
+  border-color: var(--border);
+  box-shadow: none;
+}
+
+.asset-tabs button.is-active::after {
+  display: none;
+}
+
+.asset-browser {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 54px);
+  padding: 18px 12px 12px;
+  position: sticky;
+  top: 54px;
+}
+
+.asset-browser-heading {
+  align-items: flex-start;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 0 4px 13px;
+}
+
+.asset-browser-heading h2 {
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.035em;
+  line-height: 1.2;
+  margin: 2px 0 0;
+}
+
+.asset-browser .scene-scope {
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  margin: 0;
+  padding: 10px 4px;
+}
+
+.asset-browser .asset-list-tools {
+  margin: 11px 0 8px;
+}
+
+.asset-browser .asset-list-heading {
+  margin: 8px 4px 5px;
+}
+
+.asset-browser .asset-card-list {
+  padding-bottom: 4px;
+}
+
+.asset-browser .scene-asset-summary {
+  margin: 2px 0 9px;
+}
+
+.asset-browser .scene-asset-create-note {
+  margin: 2px 0 9px;
+}
+
+@media (max-width: 980px) {
+  .asset-workspace-grid {
+    grid-template-columns: 150px 252px minmax(0, 1fr);
+  }
+
+  .asset-studio-column {
+    padding-left: 24px;
+    padding-right: 24px;
+  }
+}
+
+@media (max-width: 720px) {
+  .asset-workspace-grid {
+    display: block;
+  }
+
+  .workspace-navigation,
+  .asset-browser {
+    border-right: 0;
+    height: auto;
+    position: static;
+  }
+
+  .workspace-navigation {
+    border-bottom: 1px solid var(--border);
+    padding: 12px;
+  }
+
+  .workspace-navigation-heading {
+    display: none;
+  }
+
+  .asset-tabs {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .navigation-section-label {
+    display: none;
+  }
+
+  .asset-tabs button,
+  .asset-tabs button.is-primary-tab {
+    min-width: 0;
+    padding: 0 5px;
+  }
+
+  .asset-tabs button span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .asset-browser {
+    border-bottom: 1px solid var(--border);
+    max-height: 42vh;
+  }
+}
+
 @media (max-width: 900px) {
   .topbar {
     grid-template-columns: minmax(0, 1fr) auto auto;
