@@ -43,6 +43,11 @@ test('a watched completed job with output paths triggers one archive refresh and
   ])
 
   assert.equal(completed.archivedCount, 1)
+  assert.deepEqual(completed.archivedJobs, [{
+    id: 'job-completed',
+    status: 'completed',
+    outputPaths: ['characters/gu-lin/turnaround/result.png'],
+  }])
   assert.equal(completed.watches.has('job-completed'), false)
 
   const observedAgain = reconcileComfyJobWatches(completed.watches, 'characters/gu-lin', [

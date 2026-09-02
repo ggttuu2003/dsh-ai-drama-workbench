@@ -403,6 +403,7 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
 
     await withProjectRoot(root, async () => {
       const locationPath = await createLocationAsset('测试地点')
+      const propPath = await createPropAsset('测试道具')
       const current = await getAssetWorkspaceSnapshot()
       const currentScene = current.scenes.find(item => item.rootPath === scene.rootPath)
       assert.ok(currentScene)
@@ -415,10 +416,19 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
           startShotId: 'SH001',
           endShotId: 'SH001',
         }],
-        props: currentScene.propBindings,
+        props: [...currentScene.propBindings, {
+          propPath,
+          role: '关键道具',
+          state: '',
+          continuity: '',
+          startShotId: 'SH001',
+          endShotId: 'SH001',
+        }],
       }, currentScene.assetBindingsRevision)
       await saveAssetUploadStream('location', locationPath, 'setting', '地点场景图-01.png', Readable.from([PIXEL_PNG]))
       await setWorkspaceVisualSelection('location', locationPath, 'setting', '地点场景图-01.png')
+      await saveAssetUploadStream('prop', propPath, 'reference', '道具参考-01.png', Readable.from([PIXEL_PNG]))
+      await setWorkspaceVisualSelection('prop', propPath, 'reference', '道具参考-01.png')
     })
     const locationFirstFrameImageToImage = await call(api, jsonRequest({
       assetType: 'shot',
@@ -433,6 +443,7 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       { role: '首帧输入图', name: '地点场景图-01-已选.png' },
     ])
     assert.ok(locationFirstFrameImageToImage.payload.preview.warnings.some(message => message.includes('地点/环境')))
+    assert.ok(locationFirstFrameImageToImage.payload.preview.warnings.some(message => message.includes('只支持一张参考图')))
 
     const lastFrameWithoutFirstFrame = await call(api, jsonRequest({
       assetType: 'shot',
@@ -675,7 +686,7 @@ test('ComfyUI API generates reusable location scene images and lists their jobs'
       assert.ok(location)
       await updateLocationDocument(
         created,
-        '# 焦土尽头场景设定\n\n## 基础设定\n\n末日焦土、断壁残垣和低垂铅云，远处没有现代建筑。\n',
+        '# 焦土尽头场景设定\n\n## 基础设定\n\n末日焦土、断壁残垣和低垂铅云，远处没有现代建筑。\n\n## 场景图提示词\n\n末日焦土、断壁残垣和低垂铅云，远处没有现代建筑。\n',
         location.profileRevision,
       )
       return created
@@ -693,6 +704,7 @@ test('ComfyUI API generates reusable location scene images and lists their jobs'
     assert.equal(preview.payload.preview.outputSlotLabel, '场景图')
     assert.equal(preview.payload.preview.errors.length, 0)
     assert.deepEqual(preview.payload.preview.attachments, [])
+    assert.equal(preview.payload.preview.prompt, '末日焦土、断壁残垣和低垂铅云，远处没有现代建筑。')
 
     const submission = await call(api, jsonRequest(body), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs')
     assert.equal(submission.status, 202)

@@ -1447,6 +1447,12 @@ type ComfyJob = {
   outputPaths?: string[];
 };
 
+type PendingVisualSelection = {
+  assetPath: string;
+  fileName: string;
+  slot: "setting";
+};
+
 type ComfyPreview = {
   summary?: string;
   outputSlotLabel?: string;
@@ -1808,7 +1814,7 @@ function GenerationModal({
                 </div> : null}
                 <details className="generation-advanced"><summary><span>高级参数</span><small>Seed 留空则随机</small></summary><TextField label="Seed" onChange={setSeed} value={seed} /></details>
                 {isVideo && activePreset?.id === "h3-first-last-video-v1" ? <div className="generation-mode-note"><strong>首尾帧模式</strong><span>上传已选首帧和尾帧；分辨率与 24 fps 沿用你的原始工作流，时长会由工作流自动对齐到 H3 所需帧数。</span></div> : null}
-                {!isVideo && activePreset?.referenceImagesEnabled ? <div className="generation-mode-note"><strong>当前模式：图生图</strong><span>{activePreset.id === "shot-last-frame-img2img-v1" ? "固定读取当前镜头已选首帧，生成尾帧候选。" : "优先读取镜头已选参考图，其次读取地点/环境已选场景图，再其次读取单人物已选视觉图。"}</span></div> : null}
+                {!isVideo && activePreset?.referenceImagesEnabled ? <div className="generation-mode-note"><strong>当前模式：图生图</strong><span>{activePreset.id === "shot-last-frame-img2img-v1" ? "固定读取当前镜头已选首帧，生成尾帧候选。" : "当前工作流只接收一张图：优先使用镜头参考图，其次场景图、人物图或道具图；其他参考不会上传。"}</span></div> : null}
                 {!isVideo && !activePreset?.referenceImagesEnabled ? <div className="generation-mode-note"><strong>当前模式：纯文生图</strong><span>已选三视图、定妆和参考图不会自动上传。需要图生图时，请先配置独立的图生图工作流。</span></div> : null}
               </section>
             </div>
@@ -1932,6 +1938,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   const [generationWatchPaths, setGenerationWatchPaths] = useState<string[]>([]);
   const [pendingGenerationRefreshes, setPendingGenerationRefreshes] = useState(0);
   const [generationRefreshInFlight, setGenerationRefreshInFlight] = useState(false);
+  const [pendingVisualSelection, setPendingVisualSelection] = useState<PendingVisualSelection | null>(null);
   const noticeTimerRef = useRef<number | null>(null);
   const projectEpochRef = useRef(0);
   const projectIdRef = useRef<string | null>(null);
@@ -2214,6 +2221,18 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
         return location ? [location] : [];
       });
   }, [activeScene?.scene, locationAssets, selectedAsset]);
+  const effectivePropAssetsForSelectedShot = useMemo(() => {
+    if (selectedAsset?.type !== "shot" || !activeScene?.scene) return [];
+    const seen = new Set<string>();
+    return scenePropBindings(activeScene.scene)
+      .filter((binding) => bindingAppliesToShot(binding, selectedAsset.design.shotId))
+      .flatMap((binding) => {
+        if (seen.has(binding.propPath)) return [];
+        seen.add(binding.propPath);
+        const prop = propAssets.find((asset) => asset.rootPath === binding.propPath);
+        return prop ? [prop] : [];
+      });
+  }, [activeScene?.scene, propAssets, selectedAsset]);
   const inheritedLocationsForSelectedShot = useMemo(() => {
     if (selectedAsset?.type !== "shot" || !activeScene?.scene) return [];
     return sceneLocationBindings(activeScene.scene)
@@ -2246,6 +2265,9 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   const hasSelectedSceneReference = hasSelectedLocationReference || Boolean(
     activeScene?.scene && ["setting", "reference", "firstFrame", "lastFrame"].some((key) => hasSingleSelectedSlotVisual(activeScene.scene!, key)),
   );
+  const hasSelectedPropReference = effectivePropAssetsForSelectedShot.some((prop) => (
+    ["reference", "candidate"].some((key) => hasSingleSelectedSlotVisual(prop, key))
+  ));
   const hasSelectedCharacterReference = effectiveCastForSelectedShot.some((entry) => {
     const character = characterByPath.get(entry.characterPath);
     const look = getLookForPath(character, entry.lookPath);
@@ -2258,7 +2280,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       ?? character?.confirmedVisuals.costume,
     );
   });
-  const hasShotReference = hasSelectedShotReference || hasSelectedSceneReference || hasSelectedCharacterReference;
+  const hasShotReference = hasSelectedShotReference || hasSelectedSceneReference || hasSelectedCharacterReference || hasSelectedPropReference;
   const hasSavedShotBrief = Boolean(
     selectedAsset?.type === "shot"
     && !selectedAsset.isDraft
@@ -2272,7 +2294,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   const shotWorkflowNodes = useMemo<ShotWorkflowNode[]>(() => {
     const completed = {
       design: hasSavedShotBrief,
-      reference: hasShotReference || ["firstFrame", "lastFrame", "video"].includes(activeShotWorkflowStep),
+      reference: hasShotReference,
       firstFrame: hasSelectedFirstFrame,
       lastFrame: hasSelectedLastFrame,
       video: hasGeneratedShotVideo,
@@ -2287,10 +2309,11 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   }, [activeShotWorkflowStep, hasGeneratedShotVideo, hasSavedShotBrief, hasSelectedFirstFrame, hasSelectedLastFrame, hasShotReference]);
   const firstIncompleteShotWorkflowStep = useMemo<ShotWorkflowStepId>(() => (
     !hasSavedShotBrief ? "design"
-      : !hasSelectedFirstFrame ? "firstFrame"
+      : !hasShotReference ? "reference"
+        : !hasSelectedFirstFrame ? "firstFrame"
         : !hasSelectedLastFrame ? "lastFrame"
           : "video"
-  ), [hasSavedShotBrief, hasSelectedFirstFrame, hasSelectedLastFrame]);
+  ), [hasSavedShotBrief, hasSelectedFirstFrame, hasSelectedLastFrame, hasShotReference]);
   useEffect(() => {
     const rootPath = selectedAsset?.type === "shot" && !selectedAsset.isDraft
       ? selectedAsset.rootPath || null
@@ -2498,6 +2521,12 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     ));
     if (result.archivedCount > 0) {
       setPendingGenerationRefreshes((current) => current + result.archivedCount);
+      const sceneImageJob = result.archivedJobs.find((job) => job.presetLabel === "场景图");
+      const outputPath = sceneImageJob?.outputPaths?.find((path) => path.startsWith(`${assetPath}/场景图/`));
+      const fileName = outputPath?.split("/").filter(Boolean).at(-1);
+      if (fileName && assetPath.startsWith("场景/")) {
+        setPendingVisualSelection({ assetPath, fileName, slot: "setting" });
+      }
     }
   }, []);
 
@@ -2578,6 +2607,46 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     return data;
   }, [projectUrl]);
 
+  useEffect(() => {
+    if (!pendingVisualSelection || !snapshot || isDirty || busy) return;
+    const { assetPath, fileName, slot } = pendingVisualSelection;
+    const location = snapshot.locations.find((asset) => asset.rootPath === assetPath);
+    const extensionIndex = fileName.lastIndexOf(".");
+    const selectedName = extensionIndex > 0
+      ? `${fileName.slice(0, extensionIndex)}-已选${fileName.slice(extensionIndex)}`
+      : `${fileName}-已选`;
+    const candidate = location?.slots
+      .find((assetSlot) => assetSlot.key === slot)
+      ?.files.find((file) => file.name === fileName || file.name === selectedName);
+    if (!candidate) return;
+
+    if (isSelectedVisual(candidate)) {
+      setPendingVisualSelection(null);
+      return;
+    }
+
+    const requestProjectId = projectIdRef.current;
+    const requestEpoch = projectEpochRef.current;
+    setBusy(true);
+    setPendingVisualSelection(null);
+    void postAction({
+      action: "setWorkspaceVisualSelection",
+      assetType: "location",
+      assetPath,
+      slot,
+      fileName,
+    }).then(async () => {
+      if (!isProjectRequestCurrent(requestProjectId, requestEpoch)) return;
+      await loadSnapshot(true, requestProjectId, requestEpoch);
+      notify("success", "场景图已归档，并设为当前场景参考");
+    }).catch((error) => {
+      if (!isProjectRequestCurrent(requestProjectId, requestEpoch)) return;
+      notify("error", error instanceof Error ? error.message : "场景图已归档，但自动设为当前参考失败");
+    }).finally(() => {
+      setBusy(false);
+    });
+  }, [busy, isDirty, isProjectRequestCurrent, loadSnapshot, notify, pendingVisualSelection, postAction, snapshot]);
+
   const refreshAndSelect = useCallback(async (key?: string) => {
     await loadSnapshot(false);
     if (key) setSelectedKey(key);
@@ -2611,7 +2680,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       // Reset every project-local selection before reading the new project's real files.
       setModal(null);
       setGenerationTarget(null);
-      setPendingSceneGenerationPath(null);
+      setPendingSceneImageLocationPath(null);
       setGenerationDurationSeconds(undefined);
       setGenerationPresetId(undefined);
       setMediaPreview(null);
@@ -2636,6 +2705,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       setGenerationWatchPaths([]);
       setPendingGenerationRefreshes(0);
       setGenerationRefreshInFlight(false);
+      setPendingVisualSelection(null);
       projectIdRef.current = nextProjectId;
       setProjectId(nextProjectId);
       const loaded = await loadSnapshot(false, nextProjectId, nextEpoch);
@@ -3548,6 +3618,10 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       return;
     }
     if (activeShotWorkflowStep === "reference") {
+      if (!hasShotReference) {
+        notify("error", "请先选择或生成一张场景、人物或镜头参考图");
+        return;
+      }
       setActiveShotWorkflowStep("firstFrame");
       return;
     }

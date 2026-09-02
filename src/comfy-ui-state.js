@@ -16,6 +16,7 @@ function isArchivedComfyJob(job) {
 export function reconcileComfyJobWatches(currentWatches, assetPath, jobs) {
   const watches = new Map(currentWatches)
   let archivedCount = 0
+  const archivedJobs = []
 
   for (const job of Array.isArray(jobs) ? jobs : []) {
     if (!job || typeof job.id !== 'string' || !job.id) continue
@@ -25,10 +26,13 @@ export function reconcileComfyJobWatches(currentWatches, assetPath, jobs) {
     }
     if (!watches.has(job.id)) continue
     watches.delete(job.id)
-    if (isArchivedComfyJob(job)) archivedCount += 1
+    if (isArchivedComfyJob(job)) {
+      archivedCount += 1
+      archivedJobs.push(job)
+    }
   }
 
-  return { watches, archivedCount }
+  return { watches, archivedCount, archivedJobs }
 }
 
 export function watchedComfyAssetPaths(watches) {
