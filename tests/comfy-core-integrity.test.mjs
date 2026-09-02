@@ -33,6 +33,10 @@ test('Comfy archive verifies bridge size/checksum before publishing and starts w
       { assetType: 'scene', slot: 'setting', outputSlotLabel: '场景图' },
       { assetType: 'location', slot: 'setting', outputSlotLabel: '场景图' },
     ])
+    const sceneImageImg2ImgPreset = getComfyWorkflowPresets().find(preset => preset.id === 'scene-image-img2img-v1')
+    assert.equal(sceneImageImg2ImgPreset?.referenceImagesEnabled, true)
+    assert.equal(sceneImageImg2ImgPreset?.maxReferenceImages, 2)
+    assert.deepEqual(sceneImageImg2ImgPreset?.referenceImageRoles, ['referenceImage', 'referenceImage2'])
 
     const characterPath = await withProjectRoot(root, () => createCharacterAsset('完整性测试人物'))
     const job = createComfyJob({

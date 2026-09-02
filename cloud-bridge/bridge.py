@@ -420,6 +420,33 @@ def load_workflows(
     return workflows
 
 
+def mapping_targets(mapping: dict[str, Any]) -> list[tuple[str, str]]:
+    """Return the primary mapping destination plus any fan-out destinations.
+
+    ``nodeId``/``field`` is retained for backwards compatibility.  A mapping
+    may additionally declare ``targets`` when one caller-controlled value must
+    be written to more than one ComfyUI input.  Some hand-authored contracts
+    repeat the primary destination in ``targets``; de-duplicate that harmless
+    repetition while still rejecting other duplicates during validation.
+    """
+
+    destinations = [(str(mapping.get("nodeId", "")), mapping.get("field"))]
+    raw_targets = mapping.get("targets")
+    if raw_targets is None:
+        return [(node_id, field) for node_id, field in destinations]
+    if not isinstance(raw_targets, list):
+        return [(node_id, field) for node_id, field in destinations]
+    for target in raw_targets:
+        if not isinstance(target, dict):
+            # Keep the malformed item in the result so validation can report a
+            # useful contract error instead of silently ignoring it.
+            destinations.append(("", None))
+            continue
+        destination = (str(target.get("nodeId", "")), target.get("field"))
+        destinations.append(destination)
+    return [(node_id, field) for node_id, field in destinations]
+
+
 def validate_workflow(workflow: Any, source_name: str) -> None:
     if not isinstance(workflow, dict):
         raise ValueError(f"Workflow {source_name} must be a JSON object")
@@ -455,6 +482,11 @@ def validate_workflow(workflow: Any, source_name: str) -> None:
     upload_mappings = workflow.get("uploadMappings", {})
     if not isinstance(input_mappings, dict) or not isinstance(upload_mappings, dict):
         raise ValueError(f"Workflow {workflow_id} mappings must be objects")
+    # Keep a global destination index so two independent mappings cannot race
+    # to overwrite the same ComfyUI input.  An optional upload with
+    # ``fallbackRole`` is the one intentional exception: it is an override of
+    # that fallback role when both images are supplied.
+    destination_index: dict[tuple[str, str], tuple[str, str, dict[str, Any]]] = {}
     for mapping_kind, mappings in (("input", input_mappings), ("upload", upload_mappings)):
         for name, mapping in mappings.items():
             if not isinstance(name, str) or not ID_RE.fullmatch(name) or not isinstance(mapping, dict):
@@ -472,6 +504,54 @@ def validate_workflow(workflow: Any, source_name: str) -> None:
                 raise ValueError(
                     f"Workflow {workflow_id} mapping {name} targets a missing input field"
                 )
+            raw_targets = mapping.get("targets")
+            if raw_targets is not None and (
+                not isinstance(raw_targets, list) or not raw_targets
+            ):
+                raise ValueError(
+                    f"Workflow {workflow_id} {mapping_kind} mapping {name} targets must be a non-empty list"
+                )
+            destinations: list[tuple[str, str]] = []
+            for target_index, (target_node_id, target_field) in enumerate(mapping_targets(mapping)):
+                if not isinstance(target_field, str) or not target_field:
+                    raise ValueError(
+                        f"Workflow {workflow_id} mapping {name} target {target_index} must include a field"
+                    )
+                if target_node_id not in workflow["comfyPrompt"]:
+                    raise ValueError(
+                        f"Workflow {workflow_id} mapping {name} target {target_index} must target an existing node"
+                    )
+                target_node = workflow["comfyPrompt"][target_node_id]
+                if not isinstance(target_node, dict) or not isinstance(target_node.get("inputs"), dict):
+                    raise ValueError(f"Workflow {workflow_id} node {target_node_id} is malformed")
+                if target_field not in target_node["inputs"]:
+                    raise ValueError(
+                        f"Workflow {workflow_id} mapping {name} target {target_index} targets a missing input field"
+                    )
+                destination = (target_node_id, target_field)
+                if destination in destinations:
+                    # Repeating the primary target in ``targets`` is accepted
+                    # for ergonomic full-list declarations.  Other repeats are
+                    # ambiguous and should be fixed in the contract.
+                    continue
+                destinations.append(destination)
+                previous = destination_index.get(destination)
+                if previous is not None:
+                    previous_kind, previous_name, previous_mapping = previous
+                    fallback_override = (
+                        mapping_kind == "upload"
+                        and previous_kind == "upload"
+                        and (
+                            mapping.get("fallbackRole") == previous_name
+                            or previous_mapping.get("fallbackRole") == name
+                        )
+                    )
+                    if not fallback_override:
+                        raise ValueError(
+                            f"Workflow {workflow_id} mappings {previous_name} and {name} target the same input"
+                        )
+                else:
+                    destination_index[destination] = (mapping_kind, name, mapping)
             if mapping_kind == "input" and mapping.get("type", "string") not in {
                 "string",
                 "integer",
@@ -492,6 +572,31 @@ def validate_workflow(workflow: Any, source_name: str) -> None:
                     raise ValueError(
                         f"Workflow {workflow_id} upload {name} has invalid acceptedExtensions"
                     )
+                fallback_role = mapping.get("fallbackRole")
+                if fallback_role is not None and (
+                    not isinstance(fallback_role, str)
+                    or not ID_RE.fullmatch(fallback_role)
+                    or fallback_role == name
+                    or fallback_role not in upload_mappings
+                ):
+                    raise ValueError(
+                        f"Workflow {workflow_id} upload {name} has an invalid fallbackRole"
+                    )
+
+    # Fallback chains are intentionally tiny and acyclic.  Rejecting a cycle
+    # at startup prevents an optional upload from silently leaving a placeholder
+    # filename in the submitted ComfyUI prompt.
+    for role, mapping in upload_mappings.items():
+        visited: set[str] = set()
+        current = role
+        while True:
+            if current in visited:
+                raise ValueError(f"Workflow {workflow_id} upload fallbackRole cannot contain a cycle")
+            visited.add(current)
+            fallback = upload_mappings.get(current, {}).get("fallbackRole")
+            if not fallback:
+                break
+            current = str(fallback)
 
 
 def public_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
@@ -1223,6 +1328,10 @@ class BridgeApp:
         for name, value in inputs.items():
             mapping = workflow["inputMappings"][name]
             prompt[str(mapping["nodeId"])]["inputs"][mapping["field"]] = value
+        # Apply optional fan-out destinations after the legacy primary field.
+        for name, value in inputs.items():
+            for node_id, field in mapping_targets(workflow["inputMappings"][name])[1:]:
+                prompt[str(node_id)]["inputs"][field] = value
         return prompt
 
     def _run_mock_job(self, job: dict[str, Any]) -> None:
@@ -1274,11 +1383,13 @@ class BridgeApp:
         )
         prompt = self._apply_input_mappings(workflow, job["inputs"])
         uploads = job["uploads"]
+        remote_files: dict[str, str] = {}
         for index, upload in enumerate(uploads, start=1):
             mapping = workflow["uploadMappings"][upload["role"]]
             local_path = self.store.upload_file(upload)
             remote_name = prefixed_file_name(f"{job['id']}-{index}-", upload["fileName"])
             comfy_name = self.comfy.upload_image(local_path, remote_name, f"bridge/{job['id']}")
+            remote_files[upload["role"]] = comfy_name
             prompt[str(mapping["nodeId"])]["inputs"][mapping["field"]] = comfy_name
             self.store.update_job(
                 job["id"],
@@ -1288,6 +1399,30 @@ class BridgeApp:
                     "message": f"Uploaded {index} of {len(uploads)} input assets.",
                 },
             )
+
+        def resolved_remote_file(role: str, seen: set[str] | None = None) -> str | None:
+            value = remote_files.get(role)
+            if value:
+                return value
+            mapping = workflow["uploadMappings"].get(role, {})
+            fallback_role = mapping.get("fallbackRole")
+            if not fallback_role:
+                return None
+            visited = set(seen or ())
+            if role in visited:
+                return None
+            visited.add(role)
+            return resolved_remote_file(str(fallback_role), visited)
+
+        # Inject uploads in declaration order after all files have been sent.
+        # This keeps a dual-reference request deterministic even if the client
+        # lists the optional second role before the base role.
+        for role, mapping in workflow["uploadMappings"].items():
+            comfy_name = resolved_remote_file(role)
+            if not comfy_name:
+                continue
+            for node_id, field in mapping_targets(mapping):
+                prompt[str(node_id)]["inputs"][field] = comfy_name
 
         prompt_id = self.comfy.submit_prompt(prompt, job["id"])
         self.store.update_job(

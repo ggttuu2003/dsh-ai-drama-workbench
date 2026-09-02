@@ -5,6 +5,7 @@ import { Readable } from 'node:stream'
 import {
   COMFY_MAX_OUTPUT_FILE_BYTES,
   COMFY_MAX_OUTPUT_TOTAL_BYTES,
+  COMFY_MAX_REFERENCE_IMAGES,
   ComfyArchiveError,
   ComfyConfigurationError,
   ComfyCoreError,
@@ -212,6 +213,60 @@ function selectedSlotImages(asset, keys) {
   return images
 }
 
+// Return the selected project visuals with their semantic source.  Scene-image
+// generation can be launched from a shot before the reusable location exists,
+// so the target asset itself is not enough to resolve its chosen references.
+// Every returned file still has to be explicitly marked with the persistent
+// `-已选` suffix; callers cannot smuggle arbitrary project paths into a job.
+function selectedProjectReferenceEntries(snapshot, targetAsset, targetType) {
+  const entries = []
+  const seen = new Set()
+  const add = (asset, keys, role) => {
+    for (const file of selectedSlotImages(asset, keys)) {
+      if (seen.has(file.path)) continue
+      seen.add(file.path)
+      entries.push({ file, role })
+    }
+  }
+
+  const addCharacter = character => {
+    add(character, ['reference', 'turnaround', 'costume'], 'characterReference')
+    for (const look of character?.looks ?? []) {
+      add(look, ['reference', 'turnaround', 'costume'], 'characterReference')
+    }
+  }
+  const addLocation = location => add(location, ['setting', 'reference', 'candidate'], 'sceneReference')
+  const addProp = prop => add(prop, ['reference', 'candidate'], 'propReference')
+  const addScene = scene => add(scene, ['setting', 'reference', 'firstFrame', 'lastFrame', 'candidate'], 'sceneReference')
+  const addShot = shot => add(shot, ['reference', 'candidate', 'firstFrame', 'lastFrame'], 'referenceImage')
+
+  // Put the target's own selected image first when it has one, then include
+  // the rest of the project so a newly prepared location can use the shot's
+  // people, environment, and props in one image-to-image request.
+  if (targetType === 'character') addCharacter(targetAsset)
+  else if (targetType === 'location') addLocation(targetAsset)
+  else if (targetType === 'prop') addProp(targetAsset)
+  else if (targetType === 'scene') addScene(targetAsset)
+  else if (targetType === 'shot') addShot(targetAsset)
+
+  for (const character of snapshot?.characters ?? []) {
+    if (character !== targetAsset) addCharacter(character)
+  }
+  for (const location of snapshot?.locations ?? []) {
+    if (location !== targetAsset) addLocation(location)
+  }
+  for (const prop of snapshot?.props ?? []) {
+    if (prop !== targetAsset) addProp(prop)
+  }
+  for (const scene of snapshot?.scenes ?? []) {
+    if (scene !== targetAsset) addScene(scene)
+  }
+  for (const shot of snapshot?.shots ?? []) {
+    if (shot !== targetAsset) addShot(shot)
+  }
+  return entries
+}
+
 function selectedCharacterVisual(source, keys, errors) {
   // Read the slot itself instead of the cover metadata: manually duplicated
   // "-已选" files must remain visible to the generation safety check.
@@ -221,8 +276,11 @@ function selectedCharacterVisual(source, keys, errors) {
 function roleLabel(role) {
   return ({
     referenceImage: '参考图',
+    referenceImage2: '参考图 2',
     characterReference: '人物参考',
     sceneReference: '场景参考',
+    propReference: '道具参考',
+    baseImage: '基础图',
     firstFrame: '首帧',
     lastFrame: '尾帧',
   })[role] ?? role
@@ -275,7 +333,13 @@ function characterSourceForShot(snapshot, shot, scene, warnings) {
   if (activeCharacterPaths.size > 1) {
     warnings.push('当前镜头关联了多个人物。')
   }
-  return { character, source: look ?? character, hasMultipleCharacters: activeCharacterPaths.size > 1 }
+  // A look can be selected for continuity before its own visual material is
+  // created. Match the workbench preview and fall back to the identity
+  // reference until that look has an explicitly selected image.
+  const source = look && selectedSlotImages(look, ['turnaround', 'costume', 'reference']).length
+    ? look
+    : character
+  return { character, source, hasMultipleCharacters: activeCharacterPaths.size > 1 }
 }
 
 function selectedLocationImageForShot(snapshot, shot, scene, errors) {
@@ -321,39 +385,44 @@ function effectiveCharacterSourcesForShot(snapshot, shot, scene) {
     const character = findCharacter(snapshot, characterPath)
     if (!character) return []
     const look = lookPath ? character.looks.find(item => item.rootPath === lookPath) : undefined
-    return [look ?? character]
+    // Keep the same fallback as automatic uploads: a selected LOOK without
+    // any selected visual should use the character identity reference.
+    const source = look && selectedSlotImages(look, ['turnaround', 'costume', 'reference']).length
+      ? look
+      : character
+    return [source]
   })
 }
 
-function selectedShotReferenceImages(snapshot, shot, presetId) {
+function selectedShotReferenceEntries(snapshot, shot, presetId) {
   const scene = findSceneForShot(snapshot, shot)
-  const images = []
+  const entries = []
   const paths = new Set()
-  const add = files => {
+  const add = (files, role) => {
     for (const file of files) {
       if (paths.has(file.path)) continue
       paths.add(file.path)
-      images.push(file)
+      entries.push({ file, role })
     }
   }
 
-  add(selectedSlotImages(shot, ['reference', 'candidate']))
+  add(selectedSlotImages(shot, ['reference', 'candidate']), 'referenceImage')
   for (const binding of scene?.locationBindings ?? []) {
     if (!binding?.locationPath || !isShotInBindingRange(shot.design.shotId, binding)) continue
     const location = (snapshot.locations ?? []).find(item => item.rootPath === binding.locationPath)
-    if (location) add(selectedSlotImages(location, ['setting', 'reference', 'candidate']))
+    if (location) add(selectedSlotImages(location, ['setting', 'reference', 'candidate']), 'sceneReference')
   }
-  if (scene) add(selectedSlotImages(scene, ['setting', 'reference', 'firstFrame', 'lastFrame']))
+  if (scene) add(selectedSlotImages(scene, ['setting', 'reference', 'firstFrame', 'lastFrame']), 'sceneReference')
   for (const source of effectiveCharacterSourcesForShot(snapshot, shot, scene)) {
-    add(selectedSlotImages(source, ['turnaround', 'costume', 'reference']))
+    add(selectedSlotImages(source, ['turnaround', 'costume', 'reference']), 'characterReference')
   }
   for (const binding of scene?.propBindings ?? []) {
     if (!binding?.propPath || !isShotInBindingRange(shot.design.shotId, binding)) continue
     const prop = (snapshot.props ?? []).find(item => item.rootPath === binding.propPath)
-    if (prop) add(selectedSlotImages(prop, ['reference', 'candidate']))
+    if (prop) add(selectedSlotImages(prop, ['reference', 'candidate']), 'propReference')
   }
-  if (presetId === 'shot-last-frame-img2img-v1') add(selectedSlotImages(shot, ['firstFrame']))
-  return images
+  if (presetId === 'shot-last-frame-img2img-v1') add(selectedSlotImages(shot, ['firstFrame']), 'firstFrame')
+  return entries
 }
 
 function findWorkspaceAsset(snapshot, assetType, assetPath) {
@@ -434,16 +503,81 @@ function referenceImagesOptionForPreset(preset, rawOptions) {
   return value === undefined ? Boolean(preset.referenceImagesEnabled) : value === true
 }
 
-function referenceImagePathOptionForPreset(preset, rawOptions) {
+function referenceImageLimitForPreset(preset) {
+  if (!preset.referenceImagesEnabled) return 0
+  const rawLimit = Number.isSafeInteger(preset.maxReferenceImages)
+    ? preset.maxReferenceImages
+    : 1
+  return Math.max(0, Math.min(COMFY_MAX_REFERENCE_IMAGES, rawLimit))
+}
+
+function referenceImageSelectionsOptionForPreset(preset, rawOptions) {
   if (rawOptions !== undefined && !isRecord(rawOptions)) {
     throw new ComfyApiError(400, '生成参数必须是对象。')
   }
   const options = rawOptions ?? {}
-  if (!hasOwnProperty(options, 'referenceImagePath')) return undefined
+  const suppliedKeys = ['referenceImages', 'referenceImagePaths', 'referenceImagePath']
+    .filter(key => hasOwnProperty(options, key))
+  if (!suppliedKeys.length) return undefined
   if (!preset.referenceImagesEnabled) {
     throw new ComfyApiError(400, '当前工作流不支持指定参考图。')
   }
-  return requireText(options.referenceImagePath, '参考图路径', { maximum: 1_024 })
+  if (suppliedKeys.length > 1) {
+    throw new ComfyApiError(400, '参考图参数只能使用一种格式。')
+  }
+
+  const key = suppliedKeys[0]
+  let selections
+  if (key === 'referenceImagePath') {
+    selections = [{ path: requireText(options.referenceImagePath, '参考图路径', { maximum: 1_024 }) }]
+  } else if (key === 'referenceImagePaths') {
+    if (!Array.isArray(options.referenceImagePaths)) {
+      throw new ComfyApiError(400, '参考图路径必须是数组。')
+    }
+    if (options.referenceImagePaths.length > COMFY_MAX_REFERENCE_IMAGES) {
+      throw new ComfyApiError(400, `一次最多选择 ${COMFY_MAX_REFERENCE_IMAGES} 张参考图。`)
+    }
+    selections = options.referenceImagePaths.map((value, index) => ({
+      path: requireText(value, `第 ${index + 1} 张参考图路径`, { maximum: 1_024 }),
+    }))
+  } else {
+    if (!Array.isArray(options.referenceImages)) {
+      throw new ComfyApiError(400, '参考图必须是数组。')
+    }
+    if (options.referenceImages.length > COMFY_MAX_REFERENCE_IMAGES) {
+      throw new ComfyApiError(400, `一次最多选择 ${COMFY_MAX_REFERENCE_IMAGES} 张参考图。`)
+    }
+    selections = options.referenceImages.map((value, index) => {
+      if (typeof value === 'string') {
+        return { path: requireText(value, `第 ${index + 1} 张参考图路径`, { maximum: 1_024 }) }
+      }
+      if (!isRecord(value)) throw new ComfyApiError(400, `第 ${index + 1} 张参考图格式无效。`)
+      const pathValue = requireText(value.path, `第 ${index + 1} 张参考图路径`, { maximum: 1_024 })
+      const role = value.role === undefined || value.role === null || value.role === ''
+        ? undefined
+        : requireText(value.role, `第 ${index + 1} 张参考图角色`, { maximum: 128 })
+      return { path: pathValue, ...(role ? { role } : {}) }
+    })
+  }
+
+  if (selections.length > COMFY_MAX_REFERENCE_IMAGES) {
+    throw new ComfyApiError(400, `一次最多选择 ${COMFY_MAX_REFERENCE_IMAGES} 张参考图。`)
+  }
+  const limit = referenceImageLimitForPreset(preset)
+  if (selections.length > limit) {
+    throw new ComfyApiError(400, `当前工作流最多支持 ${limit} 张参考图。`)
+  }
+  const paths = new Set()
+  const roles = new Set()
+  for (const selection of selections) {
+    if (paths.has(selection.path)) throw new ComfyApiError(400, '同一张参考图不能重复选择。')
+    paths.add(selection.path)
+    if (selection.role) {
+      if (roles.has(selection.role)) throw new ComfyApiError(400, `参考图角色“${selection.role}”不能重复。`)
+      roles.add(selection.role)
+    }
+  }
+  return selections
 }
 
 function outputTargetForPreset(preset, assetType, assetPath, lookPath) {
@@ -671,15 +805,71 @@ export function buildShotVideoBrief(snapshot, shot) {
   return assembleBoundedBrief(sections)
 }
 
-function deriveUploads(snapshot, asset, assetType, look, preset, warnings, errors, useReferenceImages = false, referenceImagePath = undefined) {
-  // Image presets are text-to-image by default. Do not inspect or upload a
-  // selected reference unless a dedicated image-to-image preset opts in.
-  if (preset.output.kind === 'image' && !useReferenceImages) return []
+function deriveUploads(snapshot, asset, assetType, look, preset, warnings, errors, useReferenceImages = false, referenceSelections = undefined) {
   const acceptedRoles = new Set(preset.uploadRoles.map(item => item.role))
   const uploads = []
   const add = (role, file) => {
     if (!acceptedRoles.has(role) || !file || uploads.some(item => item.role === role)) return
     uploads.push(makeUpload(role, file))
+  }
+  const referenceRoleOrder = (Array.isArray(preset.referenceImageRoles) && preset.referenceImageRoles.length
+    ? preset.referenceImageRoles
+    : ['referenceImage'])
+    .filter(role => acceptedRoles.has(role))
+  const pushError = message => {
+    if (!errors.includes(message)) errors.push(message)
+  }
+
+  const appendMissingRequiredUploads = () => {
+    for (const definition of preset.uploadRoles) {
+      if (!definition.required || uploads.some(item => item.role === definition.role)) continue
+      if (preset.id === 'shot-first-frame-img2img-v1') {
+        pushError('镜头首帧图生图需要一张已选输入图。请先选择镜头、场景、人物或道具参考图。')
+      } else if (preset.id === 'shot-last-frame-img2img-v1') {
+        pushError('镜头尾帧图生图需要当前镜头的已选首帧。请先生成或上传首帧并设为“已选”。')
+      } else if (preset.id === 'scene-image-img2img-v1') {
+        pushError('场景图图生图需要至少一张已选参考图。请先选择人物、场景或道具图片。')
+      } else {
+        pushError(`${preset.label}需要已选${roleLabel(definition.role)}。请先在对应资料槽中将图片设为“已选”。`)
+      }
+    }
+  }
+
+  // Image presets are text-to-image by default. Do not inspect or upload a
+  // selected reference unless a dedicated image-to-image preset opts in. Keep
+  // the required-upload check active, though, so a caller cannot turn off
+  // references on an image-to-image preset and enqueue a job that the Bridge
+  // will reject later.
+  if (preset.output.kind === 'image' && !useReferenceImages) {
+    appendMissingRequiredUploads()
+    return []
+  }
+
+  // Scene image generation can be opened from a shot while its output is
+  // archived into a newly prepared location asset. In that flow the selected
+  // reference files belong to the shot's people/props/scene, not to the empty
+  // location itself. Resolve them against the current project snapshot while
+  // still requiring the files to be explicitly marked "已选".
+  if (referenceSelections !== undefined && (assetType === 'scene' || assetType === 'location')) {
+    const availableReferences = selectedProjectReferenceEntries(snapshot, asset, assetType)
+    for (const selection of referenceSelections) {
+      const entry = availableReferences.find(candidate => candidate.file.path === selection.path)
+      if (!entry) {
+        errors.push('指定参考图不属于当前项目可用的已选参考素材。')
+        continue
+      }
+      const role = [selection.role, entry.role, ...referenceRoleOrder]
+        .filter(Boolean)
+        .find(candidate => acceptedRoles.has(candidate) && !uploads.some(upload => upload.role === candidate))
+      if (!role) {
+        errors.push(`当前工作流不接受${selection.role ? `“${selection.role}”` : '该'}参考图角色。`)
+        continue
+      }
+      add(role, entry.file)
+    }
+    if (referenceSelections.length && uploads.length) warnings.push('场景图图生图将使用指定参考图。')
+    appendMissingRequiredUploads()
+    return uploads
   }
 
   if (assetType === 'character') {
@@ -696,16 +886,64 @@ function deriveUploads(snapshot, asset, assetType, look, preset, warnings, error
     add('referenceImage', selectedSlotImage(asset, ['reference', 'candidate'], errors))
   } else {
     const scene = findSceneForShot(snapshot, asset)
-    if (referenceImagePath) {
-      const explicitReference = selectedShotReferenceImages(snapshot, asset, preset.id)
-        .find(file => file.path === referenceImagePath)
-      if (!explicitReference) {
-        errors.push('指定参考图不属于当前镜头可用的已选参考素材。')
-        return uploads
+    if (referenceSelections !== undefined) {
+      const availableReferences = selectedShotReferenceEntries(snapshot, asset, preset.id)
+      const acceptedReferenceRoles = new Set(
+        Array.isArray(preset.referenceImageRoles) && preset.referenceImageRoles.length
+          ? preset.referenceImageRoles
+          : ['referenceImage'],
+      )
+      const explicitReferenceRoleOrder = [...acceptedReferenceRoles]
+      let orderedSelections = referenceSelections
+      const isTailFrameImageToImage = preset.id === 'shot-last-frame-img2img-v1'
+      if (isTailFrameImageToImage) {
+        // Tail-frame continuity is non-negotiable: the selected first frame
+        // must be present and must occupy the primary graph input. A second
+        // person/scene/prop image may supplement it, but never replace it.
+        const firstFrame = selectedSlotImage(asset, ['firstFrame'], errors)
+        const firstFrameIndex = firstFrame
+          ? referenceSelections.findIndex(selection => selection.path === firstFrame.path)
+          : -1
+        if (!firstFrame || firstFrameIndex < 0) {
+          pushError('镜头尾帧图生图需要当前镜头的已选首帧。请先生成或上传首帧并设为“已选”。')
+        } else {
+          orderedSelections = [
+            referenceSelections[firstFrameIndex],
+            ...referenceSelections.filter((_, index) => index !== firstFrameIndex),
+          ]
+        }
       }
-      add('referenceImage', explicitReference)
-      if (preset.id === 'shot-first-frame-img2img-v1') warnings.push('首帧图生图将使用指定参考图。')
-      else if (preset.id === 'shot-last-frame-img2img-v1') warnings.push('尾帧图生图将使用指定参考图。')
+      for (const [selectionIndex, selection] of orderedSelections.entries()) {
+        const entry = availableReferences.find(candidate => candidate.file.path === selection.path)
+        if (!entry) {
+          errors.push('指定参考图不属于当前镜头可用的已选参考素材。')
+          continue
+        }
+        // Prefer the caller's semantic role when the graph declares it; for
+        // legacy generic roles, allocate the first unused declared slot. This
+        // keeps `referenceImagePath` jobs working while allowing a second
+        // selected image to use `referenceImage2`.
+        const forcedTailRole = isTailFrameImageToImage
+          ? explicitReferenceRoleOrder[selectionIndex]
+          : undefined
+        const role = [forcedTailRole, selection.role, entry.role, ...explicitReferenceRoleOrder]
+          .filter(Boolean)
+          .find(candidate => acceptedReferenceRoles.has(candidate) && !uploads.some(upload => upload.role === candidate))
+        if (!role) {
+          errors.push(`当前工作流不接受${selection.role ? `“${selection.role}”` : '该'}参考图角色。`)
+          continue
+        }
+        if (uploads.some(upload => upload.role === role)) {
+          errors.push(`参考图角色“${roleLabel(role)}”只能选择一张。`)
+          continue
+        }
+        add(role, entry.file)
+      }
+      if (referenceSelections.length && uploads.length) {
+        if (preset.id === 'shot-first-frame-img2img-v1') warnings.push('首帧图生图将使用指定参考图。')
+        else if (preset.id === 'shot-last-frame-img2img-v1') warnings.push('尾帧图生图将使用指定参考图。')
+      }
+      appendMissingRequiredUploads()
       return uploads
     }
     const characterSource = characterSourceForShot(snapshot, asset, scene, warnings)
@@ -724,21 +962,70 @@ function deriveUploads(snapshot, asset, assetType, look, preset, warnings, error
       errors.push('当前镜头关联了多个人物，但这个工作流只支持单张人物参考。请先只保留一位出场角色，或改用支持多人参考图的工作流。')
     }
     if (preset.id === 'shot-first-frame-img2img-v1') {
-      const reference = shotReference ?? locationImage ?? legacySceneImage ?? characterImage ?? propImage
-      add('referenceImage', reference)
-      if (reference && reference === shotReference) warnings.push('首帧图生图将使用当前镜头已选参考图。')
-      else if (reference && reference === locationImage) warnings.push('首帧图生图将使用当前场次地点/环境的已选场景图。')
-      else if (reference && reference === legacySceneImage) warnings.push('首帧图生图将使用当前场次已选场景图。')
-      else if (reference && reference === characterImage) warnings.push('首帧图生图将使用本镜头出场人物的已选视觉图。')
-      else if (reference && reference === propImage) warnings.push('首帧图生图将使用本镜头道具的已选参考图。')
-      const ignoredReferences = [characterImage, locationImage ?? legacySceneImage, propImage]
-        .filter(image => image && image !== reference)
-      if (reference && ignoredReferences.length) {
-        warnings.push('当前首帧图生图工作流只支持一张参考图，其余人物、场景或道具参考不会上传。')
+      const sceneImage = locationImage ?? legacySceneImage
+      const primaryCandidates = [
+        [shotReference, '首帧图生图将使用当前镜头已选参考图。'],
+        [sceneImage, locationImage
+          ? '首帧图生图将使用当前场次地点/环境的已选场景图。'
+          : '首帧图生图将使用当前场次已选场景图。'],
+        [characterImage, '首帧图生图将使用本镜头出场人物的已选视觉图。'],
+        [propImage, '首帧图生图将使用本镜头道具的已选参考图。'],
+      ]
+      const primary = primaryCandidates.find(([file]) => file)
+      // Keep the automatic fallback conservative: a character is the only
+      // secondary reference selected implicitly.  Props can still be picked
+      // explicitly in the dialog without unexpectedly changing old jobs.
+      const candidates = primary
+        ? [primary, ...(characterImage && characterImage !== primary[0]
+          ? [[characterImage, '首帧图生图将使用本镜头出场人物的已选视觉图。']]
+          : [])]
+        : []
+      const usedPaths = new Set()
+      let selectedCount = 0
+      for (const [file, warning] of candidates) {
+        if (!file || usedPaths.has(file.path) || selectedCount >= referenceRoleOrder.length) continue
+        const role = referenceRoleOrder[selectedCount]
+        if (!role) break
+        add(role, file)
+        if (uploads.some(upload => upload.role === role)) {
+          usedPaths.add(file.path)
+          selectedCount += 1
+          warnings.push(warning)
+        }
+      }
+      if (selectedCount > 1) {
+        warnings.push('当前工作流将同时使用两张参考图。')
       }
     } else if (preset.id === 'shot-last-frame-img2img-v1') {
-      add('referenceImage', firstFrame)
-      if (firstFrame) warnings.push('尾帧图生图将使用当前镜头已选首帧。')
+      // Preserve the frame pipeline's invariant: automatic tail-frame
+      // generation starts from the selected first frame. Other assets may be
+      // added as a second reference when that first frame exists. If no first
+      // frame exists, the user can still explicitly choose people/scene/props
+      // in the reference picker; that path is handled above.
+      const primary = firstFrame
+        ? [firstFrame, '尾帧图生图将使用当前镜头已选首帧。']
+        : undefined
+      const candidates = primary
+        ? [primary, ...(firstFrame && characterImage && characterImage !== firstFrame
+          ? [[characterImage, '尾帧图生图将使用本镜头出场人物的已选视觉图。']]
+          : [])]
+        : []
+      const usedPaths = new Set()
+      let selectedCount = 0
+      for (const [file, warning] of candidates) {
+        if (!file || usedPaths.has(file.path) || selectedCount >= referenceRoleOrder.length) continue
+        const role = referenceRoleOrder[selectedCount]
+        if (!role) break
+        add(role, file)
+        if (uploads.some(upload => upload.role === role)) {
+          usedPaths.add(file.path)
+          selectedCount += 1
+          warnings.push(warning)
+        }
+      }
+      if (selectedCount > 1) {
+        warnings.push('当前工作流将同时使用两张参考图。')
+      }
     } else {
       add('characterReference', characterImage)
       add('sceneReference', locationImage ?? legacySceneImage)
@@ -748,16 +1035,7 @@ function deriveUploads(snapshot, asset, assetType, look, preset, warnings, error
     }
   }
 
-  for (const definition of preset.uploadRoles) {
-    if (!definition.required || uploads.some(item => item.role === definition.role)) continue
-    if (preset.id === 'shot-first-frame-img2img-v1') {
-      errors.push('镜头首帧图生图需要一张已选输入图。请先选择镜头、场景、人物或道具参考图。')
-    } else if (preset.id === 'shot-last-frame-img2img-v1') {
-      errors.push('镜头尾帧图生图需要当前镜头的已选首帧。请先生成或上传首帧并设为“已选”。')
-    } else {
-      errors.push(`${preset.label}需要已选${roleLabel(definition.role)}。请先在对应资料槽中将图片设为“已选”。`)
-    }
-  }
+  appendMissingRequiredUploads()
   return uploads
 }
 
@@ -797,16 +1075,22 @@ async function deriveGenerationPlan(root, body) {
   const errors = []
   if (!prompt) errors.push('本次任务没有可用提示词。')
   const useReferenceImages = referenceImagesOptionForPreset(preset, body.options)
-  const referenceImagePath = referenceImagePathOptionForPreset(preset, body.options)
-  const supportsExplicitShotReference = assetType === 'shot'
+  const referenceSelections = referenceImageSelectionsOptionForPreset(preset, body.options)
+  const referenceImagePath = referenceSelections?.[0]?.path
+  const supportsExplicitReference = (
+    assetType === 'shot'
     && ['shot-first-frame-img2img-v1', 'shot-last-frame-img2img-v1'].includes(preset.id)
-  if (referenceImagePath && !supportsExplicitShotReference) {
-    throw new ComfyApiError(400, '指定参考图仅支持镜头首尾帧图生图。')
+  ) || (
+    ['scene', 'location'].includes(assetType)
+    && preset.id === 'scene-image-img2img-v1'
+  )
+  if (referenceImagePath && !supportsExplicitReference) {
+    throw new ComfyApiError(400, '指定参考图仅支持镜头或场景图生图。')
   }
   if (referenceImagePath && !useReferenceImages) {
     throw new ComfyApiError(400, '指定参考图时不能关闭图生图。')
   }
-  const uploads = deriveUploads(snapshot, asset, assetType, look, preset, warnings, errors, useReferenceImages, referenceImagePath)
+  const uploads = deriveUploads(snapshot, asset, assetType, look, preset, warnings, errors, useReferenceImages, referenceSelections)
   // A Markdown shot may still carry a negative prompt, but only include it
   // when the selected preset explicitly declares that input.  MiniMax H3's
   // ImageToVideo node has no negative-prompt socket; forwarding this field
@@ -842,9 +1126,9 @@ async function deriveGenerationPlan(root, body) {
       prompt: inputs.prompt,
       negativePrompt: inputs.negativePrompt ?? '',
       attachments: uploads.map(upload => ({
-        role: preset.id === 'shot-first-frame-img2img-v1'
+        role: preset.id === 'shot-first-frame-img2img-v1' && uploads.length === 1
           ? '首帧输入图'
-          : preset.id === 'shot-last-frame-img2img-v1'
+          : preset.id === 'shot-last-frame-img2img-v1' && uploads.length === 1
             ? referenceImagePath ? '尾帧输入图' : '已选首帧'
             : roleLabel(upload.role),
         name: upload.fileName,

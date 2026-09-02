@@ -145,14 +145,14 @@ Bridge 默认只监听服务器回环地址。建议使用 HTTPS 反向代理、
 ### 3. 在工作台生成
 
 1. 先保存人物、场景、道具或镜头 Markdown；生成只使用磁盘中已保存的内容。
-2. 在镜头的“画面参考”点击“生成场景图”，会创建或复用项目级 `场景/<场次名>/`，自动关联当前场次，并把结果归档到该场景资产的 `场景图/`。人物、场景、道具参考图、镜头候选以及纯文生图首尾帧预设不需要选择参考图。
-3. 生成图生图首帧前，可在镜头参考图、当前场次绑定场景/道具或人物视觉资料中设一张为 `-已选`；没有参考图时会自动使用文生图首帧。生成图生图尾帧前，必须先把当前镜头的一张首帧设为 `-已选`。
+2. 在镜头的“画面参考”点击“生成场景图”，会创建或复用项目级 `场景/<场次名>/`，自动关联当前场次，并把结果归档到该场景资产的 `场景图/`。弹窗支持文生图或图生图；图生图可从当前镜头可用的已选人物、场景或道具图中选择参考。
+3. 生成图生图首帧时，可选择最多两张已选人物、场景、道具或镜头参考图（例如人物 + 场景）；不选参考图时使用文生图。尾帧默认使用当前镜头已选首帧，也可以在图生图模式下再选择一张人物、场景或道具参考图；所有参考图都必须先标为 `-已选`。
 4. H3 首尾帧视频需要在镜头的首帧和尾帧资料槽中各设一张为 `-已选`。选中资产后点击右上“生成”，选择服务器与固定预设，再点击“生成视频”。
 5. 人物三视图/定妆、场景图、道具参考图、镜头候选、首帧、尾帧和 H3 视频都会进入各自资料槽；图片任务的提示词可在生成弹窗中直接修改，不会自动标为已选或覆盖定稿。
 
 图片任务的生成弹窗会显示提示词和负面提示词，可在提交前临时修改；修改只影响本次任务，不回写人物、场景、道具或镜头 Markdown。图生视频仍只读取已保存的镜头资料。
 
-需要拖入 ComfyUI 画布时，请使用 `cloud-bridge/comfyui-workflows/z-image-turbo-image-to-image.json`。Bridge 实际执行的是 `cloud-bridge/api-workflows/image-to-image.api.json`，并由 `cloud-bridge/workflows/image-to-image.json` 声明允许替换的节点字段；后两者都不是画布文件，不能拖入 ComfyUI。三个文件沿用当前 Z-Image Turbo 模型并只使用 ComfyUI 内置的 `LoadImage`、`ImageScale`、`VAEEncode`、`KSampler`、`VAEDecode` 节点。ComfyUI 官方的通用图生图节点连接方式可在 [Image-to-Image 官方示例](https://comfyanonymous.github.io/ComfyUI_examples/img2img/) 查看；官方示例使用 SD1.5，仅用于理解节点连接，不应直接替换本项目的 Z-Image 模型文件。
+需要拖入 ComfyUI 画布时，请使用 `cloud-bridge/comfyui-workflows/z-image-turbo-image-to-image.json`。Bridge 实际执行的是 `cloud-bridge/api-workflows/image-to-image.api.json`，并由 `cloud-bridge/workflows/image-to-image.json` 声明允许替换的节点字段；后两者都不是画布文件，不能拖入 ComfyUI。三个文件沿用当前 Z-Image Turbo 模型，并使用 `LoadImage`、`ImageScale`、`VAEEncode`、`LatentBlend`、`KSampler`、`VAEDecode` 节点。单图时第二路复用第一张，双图时由 `LatentBlend` 混合两路 latent；目标 ComfyUI 需要提供该节点。ComfyUI 官方的通用图生图节点连接方式可在 [Image-to-Image 官方示例](https://comfyanonymous.github.io/ComfyUI_examples/img2img/) 查看；官方示例使用 SD1.5，仅用于理解节点连接，不应直接替换本项目的 Z-Image 模型文件。
 
 `H3 首尾帧视频` 会严格要求镜头的首帧和尾帧都已标为 `-已选`。任务开始前会再次校验这些已选文件仍然存在，避免排队期间换图却误用旧参考。任务状态和归档结果会显示在同一生成弹窗内；失败或取消的任务不支持重试，需要重新生成，尚未提交到云端的排队任务可点“取消排队”。任务记录保存在项目的隐藏目录 `.workbench/jobs/`，不会出现在资产列表中。
 

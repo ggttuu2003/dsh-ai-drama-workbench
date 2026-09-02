@@ -29,10 +29,13 @@ api-workflows/image-to-image.api.json
 workflows/image-to-image.json
 ```
 
-The Bridge injects one selected image into `LoadImage` node `18`; width and
-height target `ImageScale` node `19`, while denoise and seed target `KSampler`
-node `6`. The graph follows ComfyUI's official `LoadImage -> VAEEncode ->
-KSampler` image-to-image pattern:
+The Bridge injects the base image into `LoadImage` node `18` and an optional
+second image into node `21`. When only one image is supplied, the contract
+copies it to node `21`; the two `VAEEncode` outputs are combined by standard
+ComfyUI `LatentBlend` node `24`. Width and height target both `ImageScale`
+nodes (`19` and `22`), while denoise and seed target `KSampler` node `6`. The
+graph follows ComfyUI's official `LoadImage -> VAEEncode -> KSampler`
+image-to-image pattern:
 https://comfyanonymous.github.io/ComfyUI_examples/img2img/
 
 For the current MiniMax H3 first/last-frame video workflow:

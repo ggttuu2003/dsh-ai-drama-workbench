@@ -6,9 +6,11 @@ Workbench. It is intended to run on the same cloud server as ComfyUI.
 When a workflow declares image inputs, the workbench uploads the selected local
 assets, submits a fixed workflow preset, polls the job, then downloads only the
 files recorded for that job. The `image-generate` workflow is prompt-only and
-does not upload any image. The separate `image-to-image` workflow uploads one
-explicitly selected reference image for first/last-frame image generation. The
-H3 video workflow uploads the selected first and last frames to its two
+does not upload any image. The separate `image-to-image` workflow uploads one or two
+explicitly selected reference images for first/last-frame and scene image
+generation. With one image, the graph reuses it for both latent inputs; with
+two images, it blends the two encoded latents. The H3 video workflow uploads
+the selected first and last frames to its two
 `LoadImage` nodes, then downloads the final `SaveVideo` output.
 The bridge does **not** expose ComfyUI directly to a browser and does not accept
 arbitrary ComfyUI prompt graphs from callers.
@@ -163,7 +165,8 @@ The exact accepted input names and upload roles come from `GET /workflows`.
 The current `image-generate` graph accepts `prompt`, `negativePrompt`, `width`,
 `height`, and `seed`; it is the user's prompt-only export and declares no image
 uploads. The current `image-to-image` graph accepts the same image inputs plus
-`denoise`, and requires one `referenceImage` upload. The current H3 video graph
+`denoise`, and requires one `referenceImage` upload; `referenceImage2` is
+optional and falls back to the first image. The current H3 video graph
 accepts `prompt`, `seed`, and `durationSeconds`, and requires `firstFrame` plus
 `lastFrame` uploads. Its raw
 graph retains ownership of resolution, 24 fps output, and the `17k+5` frame
@@ -249,6 +252,24 @@ An uploaded asset mapping has this form:
   "acceptedExtensions": [".png", ".jpg", ".jpeg", ".webp"]
 }
 ```
+
+An optional second image and a fan-out input mapping can be declared like this:
+
+```json
+"referenceImage2": {
+  "nodeId": "21",
+  "field": "image",
+  "required": false,
+  "fallbackRole": "referenceImage",
+  "acceptedExtensions": [".png", ".jpg", ".jpeg", ".webp"]
+}
+```
+
+`targets` is an optional list on an input or upload mapping when the same value
+must be written to multiple ComfyUI fields. Every target must exist in the raw
+API graph. The shipped image-to-image graph uses ComfyUI's standard
+`LatentBlend` node; the target server must provide that node and the model/VAE
+files referenced by the raw export.
 
 The bridge injects only these declared fields. It uploads input images to the
 local ComfyUI `/upload/image` endpoint, submits the preset through `/prompt`,

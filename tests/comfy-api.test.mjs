@@ -11,6 +11,7 @@ import { buildShotVideoBrief, createComfyApi, MAX_SHOT_VIDEO_BRIEF_CHARS } from 
 import { createComfyJobStore, resolveComfyArchiveTarget, saveComfyConfig } from '../src/comfy-core.js'
 import {
   createCharacterAsset,
+  createCharacterLookAsset,
   createLocationAsset,
   createPropAsset,
   createSceneAsset,
@@ -464,7 +465,6 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       { role: '首帧输入图', name: '地点场景图-01-已选.png' },
     ])
     assert.ok(locationFirstFrameImageToImage.payload.preview.warnings.some(message => message.includes('地点/环境')))
-    assert.ok(locationFirstFrameImageToImage.payload.preview.warnings.some(message => message.includes('只支持一张参考图')))
 
     const referencesSnapshot = await withProjectRoot(root, () => getAssetWorkspaceSnapshot())
     const refreshedScene = referencesSnapshot.scenes.find(item => item.rootPath === scene.rootPath)
@@ -534,6 +534,24 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
     assert.equal(lastFrameWithoutFirstFrame.status, 200)
     assert.ok(lastFrameWithoutFirstFrame.payload.preview.errors.some(message => message.includes('已选首帧')))
 
+    const imageToImageDisabled = await call(api, jsonRequest({
+      assetType: 'shot',
+      assetPath: shot.rootPath,
+      presetId: 'shot-first-frame-img2img-v1',
+      profileId: 'mock-cloud',
+      options: { width: '1280', height: '720', useReferenceImages: false },
+    }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
+    assert.equal(imageToImageDisabled.status, 200)
+    assert.ok(imageToImageDisabled.payload.preview.errors.some(message => message.includes('已选输入图')))
+    const imageToImageDisabledSubmit = await call(api, jsonRequest({
+      assetType: 'shot',
+      assetPath: shot.rootPath,
+      presetId: 'shot-first-frame-img2img-v1',
+      profileId: 'mock-cloud',
+      options: { width: '1280', height: '720', useReferenceImages: false },
+    }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs')
+    assert.equal(imageToImageDisabledSubmit.status, 400)
+
     await withProjectRoot(root, async () => {
       await saveAssetUploadStream('shot', shot.rootPath, 'firstFrame', '首帧-01.png', Readable.from([PIXEL_PNG]))
       await saveAssetUploadStream('shot', shot.rootPath, 'lastFrame', '尾帧-01.png', Readable.from([PIXEL_PNG]))
@@ -559,12 +577,8 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       options: { width: '1280', height: '720', denoise: '0.55', referenceImagePath: propReference.path },
     }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
     assert.equal(explicitLastFrameImageToImage.status, 200)
-    assert.equal(explicitLastFrameImageToImage.payload.preview.errors.length, 0)
-    assert.deepEqual(explicitLastFrameImageToImage.payload.preview.attachments, [
-      { role: '尾帧输入图', name: '道具参考-01-已选.png' },
-    ])
+    assert.ok(explicitLastFrameImageToImage.payload.preview.errors.some(message => message.includes('已选首帧')))
     assert.equal(explicitLastFrameImageToImage.payload.preview.prompt, 'last-frame frontier resolved composition')
-    assert.ok(explicitLastFrameImageToImage.payload.preview.warnings.some(message => message.includes('指定参考图')))
 
     const lastFrameImageToImage = await call(api, jsonRequest({
       assetType: 'shot',
@@ -585,6 +599,88 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       { characterPath: character.rootPath, state: '站立', continuity: '同场', startShotId: 'SH001', endShotId: 'SH001' },
       { characterPath: secondCharacter.rootPath, state: '站立', continuity: '同场', startShotId: 'SH001', endShotId: 'SH001' },
     ], scene.castRevision))
+
+    // Tail-frame generation always keeps the selected first frame as the
+    // primary input; a person/scene image can occupy the optional second slot.
+    const frameSnapshot = await withProjectRoot(root, () => getAssetWorkspaceSnapshot())
+    const firstFrameReference = frameSnapshot.shots
+      .find(item => item.rootPath === shot.rootPath)
+      ?.slots.find(slot => slot.key === 'firstFrame')?.files.find(file => file.name === '首帧-01-已选.png')
+    assert.ok(firstFrameReference?.path)
+    const explicitTwoReferenceLastFrame = await call(api, jsonRequest({
+      assetType: 'shot',
+      assetPath: shot.rootPath,
+      presetId: 'shot-last-frame-img2img-v1',
+      profileId: 'mock-cloud',
+      options: {
+        width: '1280',
+        height: '720',
+        denoise: '0.55',
+        referenceImages: [
+          // Deliberately send the supplemental image first. The server must
+          // still reorder the selected first frame into the primary slot.
+          { path: unboundCharacterReference.path, role: 'referenceImage' },
+          { path: firstFrameReference.path, role: 'referenceImage2' },
+        ],
+      },
+    }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
+    assert.equal(explicitTwoReferenceLastFrame.status, 200)
+    assert.equal(explicitTwoReferenceLastFrame.payload.preview.errors.length, 0)
+    assert.deepEqual(explicitTwoReferenceLastFrame.payload.preview.attachments.map(item => item.name), [
+      '首帧-01-已选.png',
+      '参考-01-已选.png',
+    ])
+    assert.equal(explicitTwoReferenceLastFrame.payload.preview.attachments.length, 2)
+
+    // A frame request may combine the selected scene and character visuals;
+    // both files must survive preflight as distinct Bridge upload roles.
+    const twoReferenceFirstFrame = await call(api, jsonRequest({
+      assetType: 'shot',
+      assetPath: shot.rootPath,
+      presetId: 'shot-first-frame-img2img-v1',
+      profileId: 'mock-cloud',
+      options: {
+        width: '1280',
+        height: '720',
+        denoise: '0.6',
+        referenceImages: [
+          { path: sceneReference.path, role: 'referenceImage' },
+          { path: unboundCharacterReference.path, role: 'referenceImage2' },
+        ],
+      },
+    }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
+    assert.equal(twoReferenceFirstFrame.status, 200)
+    assert.equal(twoReferenceFirstFrame.payload.preview.errors.length, 0)
+    assert.deepEqual(twoReferenceFirstFrame.payload.preview.attachments.map(item => item.name), [
+      '场景图-01-已选.png',
+      '参考-01-已选.png',
+    ])
+    assert.equal(twoReferenceFirstFrame.payload.preview.attachments.length, 2)
+
+    // The same multi-reference contract is available when the target is a
+    // reusable scene asset (the "生成场景图" flow), not only for a shot.
+    const twoReferenceSceneImage = await call(api, jsonRequest({
+      assetType: 'scene',
+      assetPath: scene.rootPath,
+      presetId: 'scene-image-img2img-v1',
+      profileId: 'mock-cloud',
+      options: {
+        width: '1536',
+        height: '864',
+        denoise: '0.65',
+        referenceImages: [
+          { path: sceneReference.path, role: 'referenceImage' },
+          { path: unboundCharacterReference.path, role: 'referenceImage2' },
+        ],
+      },
+    }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
+    assert.equal(twoReferenceSceneImage.status, 200)
+    assert.equal(twoReferenceSceneImage.payload.preview.errors.length, 0)
+    assert.deepEqual(twoReferenceSceneImage.payload.preview.attachments.map(item => item.name), [
+      '场景图-01-已选.png',
+      '参考-01-已选.png',
+    ])
+
     const multiCharacterPreview = await call(api, jsonRequest({
       assetType: 'shot',
       assetPath: shot.rootPath,
@@ -657,6 +753,98 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
     assert.equal(switched.status, 200)
     assert.equal(switched.payload.activeProfileId, 'standby-cloud')
     assert.equal(JSON.stringify(switched.payload).includes('local-test-token'), false)
+  } finally {
+    await bridge.close()
+    await rm(temporary, { recursive: true, force: true })
+  }
+})
+
+test('ComfyUI API falls back to the identity reference when a bound look has no selected visual', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'dsh-ai-drama-comfy-look-fallback-'))
+  const root = await realpath(temporary)
+  const configPath = path.join(temporary, 'private-comfy.json')
+  const state = { root: async () => root }
+  const bridge = await startMockBridge()
+  const api = createComfyApi(state, { configPath, pollIntervalMs: 5, maxPollMs: 2_000 })
+
+  try {
+    await saveMockConfig(configPath, bridge.url)
+    const paths = await withProjectRoot(root, async () => {
+      const characterPath = await createCharacterAsset('造型回退人物')
+      await saveAssetUploadStream('character', characterPath, 'reference', '身份-01.png', Readable.from([PIXEL_PNG]))
+      await setCharacterVisualSelection(characterPath, 'reference', '身份-01.png')
+      // The look is intentionally left without any selected visual files.
+      const lookPath = await createCharacterLookAsset(characterPath, '雨夜造型')
+      const scenePath = await createSceneAsset('EP001-SC601')
+      const sceneSnapshot = await getAssetWorkspaceSnapshot()
+      const scene = sceneSnapshot.scenes.find(item => item.rootPath === scenePath)
+      assert.ok(scene)
+      await updateSceneCastBindings(scenePath, [{
+        characterPath,
+        lookPath,
+        state: '站立',
+        continuity: '身份保持一致',
+        startShotId: 'SH001',
+        endShotId: 'SH001',
+      }], scene.castRevision)
+      const shotPath = await createShotAsset('EP001-SC601', 'SH001', '造型回退镜头', {
+        sceneId: 'EP001-SC601',
+        shotId: 'SH001',
+        title: '造型回退镜头',
+        timecode: '00:00:00:00-00:00:03:00',
+        duration: '3 秒',
+        framing: '中景',
+        content: '人物站在雨夜街口。',
+        dialogue: '',
+        camera: '固定镜头',
+        prompt: '雨夜街口的人物首帧',
+        negativePrompt: '',
+        firstFramePrompt: '',
+        firstFrameNegativePrompt: '',
+        lastFramePrompt: '',
+        lastFrameNegativePrompt: '',
+        references: '',
+        status: '待生成',
+        characterOverrides: [],
+      })
+      return { characterPath, shotPath }
+    })
+
+    const snapshot = await withProjectRoot(root, () => getAssetWorkspaceSnapshot())
+    const identity = snapshot.characters
+      .find(item => item.rootPath === paths.characterPath)
+      ?.slots.find(slot => slot.key === 'reference')
+      ?.files.find(file => file.name === '身份-01-已选.png')
+    assert.ok(identity?.path)
+
+    const baseBody = {
+      assetType: 'shot',
+      assetPath: paths.shotPath,
+      presetId: 'shot-first-frame-img2img-v1',
+      profileId: 'mock-cloud',
+      options: { width: '1280', height: '720', denoise: '0.6' },
+    }
+    const automatic = await call(api, jsonRequest(baseBody), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
+    assert.equal(automatic.status, 200)
+    assert.equal(automatic.payload.preview.errors.length, 0)
+    assert.deepEqual(automatic.payload.preview.attachments, [
+      { role: '首帧输入图', name: '身份-01-已选.png' },
+    ])
+
+    // The same identity file must remain selectable when the UI sends an
+    // explicit reference while the shot inherits an unillustrated look.
+    const explicit = await call(api, jsonRequest({
+      ...baseBody,
+      options: {
+        ...baseBody.options,
+        referenceImages: [{ path: identity.path, role: 'referenceImage' }],
+      },
+    }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
+    assert.equal(explicit.status, 200)
+    assert.equal(explicit.payload.preview.errors.length, 0)
+    assert.deepEqual(explicit.payload.preview.attachments, [
+      { role: '首帧输入图', name: '身份-01-已选.png' },
+    ])
   } finally {
     await bridge.close()
     await rm(temporary, { recursive: true, force: true })

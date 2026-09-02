@@ -2,7 +2,7 @@
   "id": "image-to-image",
   "name": "Z-Image Turbo 图生图",
   "kind": "image",
-  "description": "调用 api-workflows/image-to-image.api.json。上传一张已选参考图，缩放到目标镜头画幅后通过 VAEEncode 和可调 denoise 生成首帧或尾帧。",
+  "description": "调用 api-workflows/image-to-image.api.json。支持一张或两张已选参考图，缩放后混合 latent，再通过可调 denoise 生成首帧、尾帧或场景图。",
   "enabled": true,
   "comfyPromptFile": "image-to-image.api.json",
   "inputMappings": {
@@ -25,6 +25,10 @@
     "width": {
       "nodeId": "19",
       "field": "width",
+      "targets": [
+        { "nodeId": "19", "field": "width" },
+        { "nodeId": "22", "field": "width" }
+      ],
       "type": "integer",
       "required": false,
       "min": 256,
@@ -34,6 +38,10 @@
     "height": {
       "nodeId": "19",
       "field": "height",
+      "targets": [
+        { "nodeId": "19", "field": "height" },
+        { "nodeId": "22", "field": "height" }
+      ],
       "type": "integer",
       "required": false,
       "min": 256,
@@ -71,6 +79,19 @@
         ".webp"
       ],
       "description": "图生图输入；注入 LoadImage 节点 18"
+    },
+    "referenceImage2": {
+      "nodeId": "21",
+      "field": "image",
+      "required": false,
+      "fallbackRole": "referenceImage",
+      "acceptedExtensions": [
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp"
+      ],
+      "description": "可选第二张图；缺省时复用 referenceImage"
     }
   },
   "outputNodeIds": [

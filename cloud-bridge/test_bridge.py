@@ -231,12 +231,31 @@ class BridgeHttpTest(unittest.TestCase):
         self.assertEqual(set(image["uploadMappings"]), set())
         self.assertEqual(image["comfyPromptFile"], "image-generate.api.json")
         self.assertEqual(image["outputNodeIds"], ["17"])
-        self.assertEqual(set(image_to_image["uploadMappings"]), {"referenceImage"})
+        self.assertEqual(
+            set(image_to_image["uploadMappings"]), {"referenceImage", "referenceImage2"}
+        )
         self.assertEqual(image_to_image["comfyPromptFile"], "image-to-image.api.json")
         self.assertEqual(image_to_image["outputNodeIds"], ["17"])
         self.assertEqual(image_to_image["uploadMappings"]["referenceImage"]["nodeId"], "18")
+        self.assertEqual(image_to_image["uploadMappings"]["referenceImage2"]["nodeId"], "21")
+        self.assertFalse(image_to_image["uploadMappings"]["referenceImage2"]["required"])
+        self.assertEqual(
+            image_to_image["uploadMappings"]["referenceImage2"]["fallbackRole"],
+            "referenceImage",
+        )
         self.assertEqual(image_to_image["inputMappings"]["denoise"]["nodeId"], "6")
-        self.assertEqual(image_to_image["comfyPrompt"]["6"]["inputs"]["latent_image"], ["20", 0])
+        self.assertEqual(
+            image_to_image["inputMappings"]["width"]["targets"],
+            [{"nodeId": "19", "field": "width"}, {"nodeId": "22", "field": "width"}],
+        )
+        self.assertEqual(
+            image_to_image["inputMappings"]["height"]["targets"],
+            [{"nodeId": "19", "field": "height"}, {"nodeId": "22", "field": "height"}],
+        )
+        self.assertEqual(image_to_image["comfyPrompt"]["6"]["inputs"]["latent_image"], ["24", 0])
+        self.assertEqual(image_to_image["comfyPrompt"]["24"]["class_type"], "LatentBlend")
+        self.assertEqual(image_to_image["comfyPrompt"]["24"]["inputs"]["samples1"], ["20", 0])
+        self.assertEqual(image_to_image["comfyPrompt"]["24"]["inputs"]["samples2"], ["23", 0])
         self.assertEqual(set(video["uploadMappings"]), {"firstFrame", "lastFrame"})
         self.assertEqual(video["comfyPromptFile"], "video-first-last.api.json")
         self.assertEqual(video["outputNodeIds"], ["92"])
@@ -285,6 +304,115 @@ class BridgeHttpTest(unittest.TestCase):
         invalid["outputNodeIds"] = ["17", "17"]
         with self.assertRaises(ValueError):
             bridge.validate_workflow(invalid, "invalid.json")
+
+        invalid_target = bridge.json_clone(image_to_image)
+        invalid_target["inputMappings"]["width"]["targets"][1]["nodeId"] = "missing"
+        with self.assertRaisesRegex(ValueError, "existing node"):
+            bridge.validate_workflow(invalid_target, "invalid.json")
+
+        invalid_fallback = bridge.json_clone(image_to_image)
+        invalid_fallback["uploadMappings"]["referenceImage2"]["fallbackRole"] = "missing"
+        with self.assertRaisesRegex(ValueError, "fallbackRole"):
+            bridge.validate_workflow(invalid_fallback, "invalid.json")
+
+    def test_image_to_image_injects_second_reference_and_reuses_primary_when_omitted(self) -> None:
+        """The optional second upload must drive node 21, with a safe fallback."""
+
+        workflow = self.app.workflows["image-to-image"]
+        first = self.app.store.create_upload("scene.png", "image/png", [b"scene"])
+        second = self.app.store.create_upload("character.png", "image/png", [b"character"])
+
+        class RecordingComfy:
+            def __init__(self) -> None:
+                self.uploaded: list[tuple[str, str, str]] = []
+                self.prompt: dict[str, object] | None = None
+
+            def upload_image(self, file_path: Path, remote_name: str, subfolder: str) -> str:
+                self.uploaded.append((file_path.name, remote_name, subfolder))
+                return f"{subfolder}/{remote_name}"
+
+            def submit_prompt(self, prompt: dict[str, object], client_id: str) -> str:
+                self.prompt = prompt
+                return "prompt-image-to-image"
+
+            def history(self, prompt_id: str) -> dict[str, object]:
+                return {
+                    "outputs": {
+                        "17": {
+                            "images": [{"filename": "generated.png", "type": "output"}],
+                        }
+                    }
+                }
+
+            def download_output(self, remote: dict[str, str], destination: Path) -> tuple[int, str]:
+                destination.write_bytes(b"generated")
+                return len(b"generated"), "image/png"
+
+        def make_job(uploads: list[dict[str, object]], suffix: str) -> dict[str, object]:
+            now = bridge.utc_now()
+            return {
+                "id": f"job-image-to-image-{suffix}",
+                "workflowId": "image-to-image",
+                "workflowName": workflow["name"],
+                "kind": "image",
+                "status": "queued",
+                "progress": {"phase": "queued", "value": 0, "message": "queued"},
+                "createdAt": now,
+                "updatedAt": now,
+                "inputs": {"prompt": "combine scene and character"},
+                "uploads": uploads,
+                "outputs": [],
+                "dryRun": False,
+                "comfyPromptId": None,
+                "error": None,
+            }
+
+        def normalized_upload(upload: dict[str, object], role: str) -> dict[str, object]:
+            return {
+                "role": role,
+                "uploadId": upload["uploadId"],
+                "fileName": upload["fileName"],
+                "size": upload["size"],
+                "sha256": upload["sha256"],
+                "storedFile": upload["storedFile"],
+            }
+
+        # The fallback role should populate the second LoadImage node with the
+        # first upload, keeping old one-image callers fully compatible.
+        one_client = RecordingComfy()
+        self.app.comfy = one_client  # type: ignore[assignment]
+        one_job = make_job([normalized_upload(first, "referenceImage")], "one")
+        self.app.store.create_job(one_job)
+        self.app._run_live_job(one_job, workflow)
+        self.assertIsNotNone(one_client.prompt)
+        one_prompt = one_client.prompt or {}
+        self.assertEqual(
+            one_prompt["18"]["inputs"]["image"], one_prompt["21"]["inputs"]["image"]
+        )
+        self.assertEqual(one_prompt["24"]["inputs"]["samples1"], ["20", 0])
+        self.assertEqual(one_prompt["24"]["inputs"]["samples2"], ["23", 0])
+
+        # Supplying both roles must preserve their order and avoid replacing
+        # the second image with the fallback during the fan-out pass.
+        two_client = RecordingComfy()
+        self.app.comfy = two_client  # type: ignore[assignment]
+        two_job = make_job(
+            [
+                normalized_upload(first, "referenceImage"),
+                normalized_upload(second, "referenceImage2"),
+            ],
+            "two",
+        )
+        self.app.store.create_job(two_job)
+        self.app._run_live_job(two_job, workflow)
+        self.assertIsNotNone(two_client.prompt)
+        two_prompt = two_client.prompt or {}
+        first_remote = two_prompt["18"]["inputs"]["image"]
+        second_remote = two_prompt["21"]["inputs"]["image"]
+        self.assertNotEqual(first_remote, second_remote)
+        self.assertEqual(len(two_client.uploaded), 2)
+        self.assertTrue(first_remote.endswith(two_client.uploaded[0][1]))
+        self.assertTrue(second_remote.endswith(two_client.uploaded[1][1]))
 
     def test_workflow_contract_loads_a_verbatim_external_api_export(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

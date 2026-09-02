@@ -1,6 +1,6 @@
 {
-  "last_node_id": 12,
-  "last_link_id": 13,
+  "last_node_id": 16,
+  "last_link_id": 18,
   "nodes": [
     {
       "id": 1,
@@ -45,7 +45,7 @@
       "order": 1,
       "mode": 0,
       "outputs": [
-        { "name": "VAE", "type": "VAE", "links": [3, 12], "shape": 3, "slot_index": 0 }
+        { "name": "VAE", "type": "VAE", "links": [3, 12, 14], "shape": 3, "slot_index": 0 }
       ],
       "title": "加载 Z-Image VAE",
       "properties": { "Node name for S&R": "VAELoader" },
@@ -165,7 +165,7 @@
         { "name": "model", "type": "MODEL", "link": 8 },
         { "name": "positive", "type": "CONDITIONING", "link": 9 },
         { "name": "negative", "type": "CONDITIONING", "link": 10 },
-        { "name": "latent_image", "type": "LATENT", "link": 4 }
+        { "name": "latent_image", "type": "LATENT", "link": 18 }
       ],
       "outputs": [
         { "name": "LATENT", "type": "LATENT", "links": [11], "slot_index": 0 }
@@ -207,13 +207,84 @@
       "title": "保存首帧或尾帧",
       "properties": { "Node name for S&R": "SaveImage" },
       "widgets_values": ["ComfyUI/image-to-image"]
+    },
+    {
+      "id": 13,
+      "type": "LoadImage",
+      "pos": [20, 1010],
+      "size": [315, 314],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "outputs": [
+        { "name": "IMAGE", "type": "IMAGE", "links": [15], "slot_index": 0 },
+        { "name": "MASK", "type": "MASK", "links": null, "shape": 3, "slot_index": 1 }
+      ],
+      "title": "输入第二张参考图（可选）",
+      "properties": { "Node name for S&R": "LoadImage" },
+      "widgets_values": ["reference.png", "image"]
+    },
+    {
+      "id": 14,
+      "type": "ImageScale",
+      "pos": [390, 1050],
+      "size": [315, 130],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        { "name": "image", "type": "IMAGE", "link": 15 }
+      ],
+      "outputs": [
+        { "name": "IMAGE", "type": "IMAGE", "links": [16], "slot_index": 0 }
+      ],
+      "title": "缩放第二张参考图",
+      "properties": { "Node name for S&R": "ImageScale" },
+      "widgets_values": ["lanczos", 1536, 864, "center"]
+    },
+    {
+      "id": 15,
+      "type": "VAEEncode",
+      "pos": [760, 1050],
+      "size": [210, 46],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        { "name": "pixels", "type": "IMAGE", "link": 16 },
+        { "name": "vae", "type": "VAE", "link": 14 }
+      ],
+      "outputs": [
+        { "name": "LATENT", "type": "LATENT", "links": [17], "slot_index": 0 }
+      ],
+      "title": "编码第二张参考图",
+      "properties": { "Node name for S&R": "VAEEncode" }
+    },
+    {
+      "id": 16,
+      "type": "LatentBlend",
+      "pos": [1010, 610],
+      "size": [315, 106],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        { "name": "samples1", "type": "LATENT", "link": 4 },
+        { "name": "samples2", "type": "LATENT", "link": 17 }
+      ],
+      "outputs": [
+        { "name": "LATENT", "type": "LATENT", "links": [18], "slot_index": 0 }
+      ],
+      "title": "混合两张参考图",
+      "properties": { "Node name for S&R": "LatentBlend" },
+      "widgets_values": [0.5]
     }
   ],
   "links": [
     [1, 1, 0, 2, 0, "IMAGE"],
     [2, 2, 0, 4, 0, "IMAGE"],
     [3, 3, 0, 4, 1, "VAE"],
-    [4, 4, 0, 10, 3, "LATENT"],
+    [4, 4, 0, 16, 0, "LATENT"],
     [5, 5, 0, 8, 0, "CLIP"],
     [6, 5, 0, 9, 0, "CLIP"],
     [7, 6, 0, 7, 0, "MODEL"],
@@ -222,12 +293,17 @@
     [10, 9, 0, 10, 2, "CONDITIONING"],
     [11, 10, 0, 11, 0, "LATENT"],
     [12, 3, 0, 11, 1, "VAE"],
-    [13, 11, 0, 12, 0, "IMAGE"]
+    [13, 11, 0, 12, 0, "IMAGE"],
+    [14, 3, 0, 15, 1, "VAE"],
+    [15, 13, 0, 14, 0, "IMAGE"],
+    [16, 14, 0, 15, 0, "IMAGE"],
+    [17, 15, 0, 16, 1, "LATENT"],
+    [18, 16, 0, 10, 3, "LATENT"]
   ],
   "groups": [
-    { "title": "1. 选择参考图并设置镜头画幅", "bounding": [-10, 570, 1010, 385], "color": "#3f789e" },
+    { "title": "1. 选择一到两张参考图并设置镜头画幅", "bounding": [-10, 570, 1010, 820], "color": "#3f789e" },
     { "title": "2. 用自然语言描述目标首帧或尾帧", "bounding": [360, -20, 490, 520], "color": "#8a6f3d" },
-    { "title": "3. 调整 KSampler 的 denoise：越低越接近输入图", "bounding": [980, 110, 1080, 530], "color": "#5b4a78" }
+    { "title": "3. 混合参考图并调整 KSampler 的 denoise", "bounding": [980, 110, 1080, 650], "color": "#5b4a78" }
   ],
   "config": {},
   "extra": {

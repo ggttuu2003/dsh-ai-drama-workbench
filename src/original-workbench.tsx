@@ -595,10 +595,12 @@ type ShotReferenceVisual = {
   key: string;
   label: string;
   detail: string;
+  /** Semantic upload role used by multi-reference workflows. */
+  role?: string;
   file: AssetFile;
 };
 
-type FrameGenerationTarget = "firstFrame" | "lastFrame";
+type FrameGenerationTarget = "sceneReference" | "firstFrame" | "lastFrame";
 type FrameGenerationMode = "textToImage" | "imageToImage";
 
 type FrameGenerationRequest = {
@@ -607,8 +609,13 @@ type FrameGenerationRequest = {
 };
 
 function framePresetId(target: FrameGenerationTarget, mode: FrameGenerationMode): string {
+  if (target === "sceneReference") return mode === "imageToImage" ? "scene-image-img2img-v1" : "scene-image-v1";
   if (target === "firstFrame") return mode === "imageToImage" ? "shot-first-frame-img2img-v1" : "shot-first-frame-v1";
   return mode === "imageToImage" ? "shot-last-frame-img2img-v1" : "shot-last-frame-v1";
+}
+
+function frameGenerationLabel(target: FrameGenerationTarget): string {
+  return target === "sceneReference" ? "场景图" : target === "firstFrame" ? "首帧" : "尾帧";
 }
 
 function ShotWorkflowStepper({
@@ -1433,6 +1440,10 @@ type ComfyPreset = {
   outputSlotLabel: string;
   outputKind: "image" | "video";
   referenceImagesEnabled?: boolean;
+  /** Maximum number of frame reference images accepted by this preset. */
+  maxReferenceImages?: number;
+  /** Ordered upload slots exposed by a multi-reference workflow. */
+  referenceImageRoles?: string[];
   defaults?: { width?: number; height?: number; seed?: number; denoise?: number; frames?: number; fps?: number; durationSeconds?: number };
   inputs?: Array<{ key: string; type: "string" | "integer" | "number" }>;
 };
@@ -1533,9 +1544,14 @@ function GenerationModal({
   const [frameMode, setFrameMode] = useState<FrameGenerationMode>(() => (
     frameGeneration?.target === "lastFrame" ? "imageToImage" : "textToImage"
   ));
-  const [referenceImagePath, setReferenceImagePath] = useState(() => (
-    frameGeneration?.target === "lastFrame" ? frameGeneration.candidates[0]?.file.path ?? "" : ""
-  ));
+  // Keep the selection as paths so it remains serializable and can be sent to
+  // both the legacy single-reference contract and newer multi-reference ones.
+  const [referenceImagePaths, setReferenceImagePaths] = useState<string[]>(() => {
+    const initial = frameGeneration?.target === "lastFrame"
+      ? frameGeneration.candidates.find((candidate) => candidate.role === "firstFrame")?.file.path
+      : undefined;
+    return initial ? [initial] : [];
+  });
   const promptInitializationKeyRef = useRef<string | null>(null);
   const promptEditedRef = useRef(false);
   const presetIdRef = useRef("");
@@ -1545,15 +1561,71 @@ function GenerationModal({
   const initialFramePresetIdRef = useRef<string | undefined>(frameModePresetId);
   const initialRequestedPresetId = frameGeneration ? initialFramePresetIdRef.current : initialPresetId;
   const lockedPresetId = frameModePresetId ?? initialPresetId;
-  // A shot frame may switch only between its matching text-to-image and
-  // image-to-image presets. Other workflow entries stay fixed as before.
+  // A frame/reference generation request may switch only between its matching
+  // text-to-image and image-to-image presets. Other workflow entries stay fixed.
   const activePreset = lockedPresetId
     ? availablePresets.find((preset) => preset.id === lockedPresetId)
     : availablePresets.find((preset) => preset.id === presetId) ?? availablePresets[0];
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId);
   const isVideo = activePreset?.outputKind === "video";
   const isFrameImageToImage = Boolean(frameGeneration && frameMode === "imageToImage");
+  // Older presets expose a single LoadImage input. A multi-reference preset
+  // advertises its limit explicitly; keep one as the safe default for older
+  // servers and cap the UI at two inputs for the current frame workflow.
+  const advertisedReferenceLimits = [
+    activePreset?.maxReferenceImages,
+    activePreset?.referenceImageRoles?.length,
+  ].filter((value): value is number => Number.isSafeInteger(value) && value > 0);
+  const advertisedReferenceLimit = advertisedReferenceLimits.length
+    ? Math.min(...advertisedReferenceLimits)
+    : undefined;
+  const maxReferenceImages = isFrameImageToImage
+    ? Math.min(2, Math.max(1, advertisedReferenceLimit || 1))
+    : 0;
+  const supportsMultipleReferences = maxReferenceImages > 1;
+  const selectedReferenceImages = useMemo(() => referenceImagePaths.map((path, index) => ({
+    path,
+    // The bridge maps the first and second image to separate LoadImage
+    // inputs. Fall back to the stable legacy names for older servers.
+    role: activePreset?.referenceImageRoles?.[index]
+      ?? (index === 0 ? "referenceImage" : "referenceImage2"),
+  })), [activePreset?.referenceImageRoles, referenceImagePaths]);
+  const selectedReferencePath = referenceImagePaths[0] ?? "";
+  const requiredFirstFramePath = frameGeneration?.target === "lastFrame"
+    ? frameGeneration.candidates.find((candidate) => candidate.role === "firstFrame")?.file.path ?? ""
+    : "";
+  const requiresTailFirstFrame = frameGeneration?.target === "lastFrame" && frameMode === "imageToImage";
+  const hasRequiredFirstFrame = !requiresTailFirstFrame
+    || Boolean(requiredFirstFramePath && referenceImagePaths.includes(requiredFirstFramePath));
   const hasActiveJobs = jobs.some(isActiveComfyJob);
+
+  // A server can downgrade a preset from multi-reference to the legacy
+  // single-image contract while the dialog is open. Keep stale selections out
+  // of the next request instead of submitting an array the preset cannot use.
+  useEffect(() => {
+    if (!frameGeneration || !maxReferenceImages) return;
+    const availablePaths = new Set(frameGeneration.candidates.map((candidate) => candidate.file.path));
+    setReferenceImagePaths((current) => {
+      const next = current.filter((path) => availablePaths.has(path)).slice(0, maxReferenceImages);
+      return next.length === current.length && next.every((path, index) => path === current[index]) ? current : next;
+    });
+  }, [frameGeneration, maxReferenceImages]);
+
+  // Older Bridge instances may advertise only the text-to-image half of a
+  // frame flow. Fall back to the available mode so the dialog does not open
+  // with an unavailable preset and a permanently disabled submit button.
+  useEffect(() => {
+    if (!frameGeneration || loading || !presets.length) return;
+    const currentPresetId = framePresetId(frameGeneration.target, frameMode);
+    const currentPreset = availablePresets.find((preset) => preset.id === currentPresetId);
+    if (currentPreset && (frameMode !== "imageToImage" || currentPreset.referenceImagesEnabled)) return;
+    const fallbackMode: FrameGenerationMode = frameMode === "imageToImage" ? "textToImage" : "imageToImage";
+    const fallbackPreset = availablePresets.find((preset) => preset.id === framePresetId(frameGeneration.target, fallbackMode));
+    if (fallbackPreset && (fallbackMode !== "imageToImage" || fallbackPreset.referenceImagesEnabled)) {
+      setFrameMode(fallbackMode);
+    }
+  }, [availablePresets, frameGeneration, frameMode, loading, presets.length]);
+
   const promptInitializationKey = !isVideo && activePreset
     ? [projectId || "", asset.type, assetPath, lookPath || "", activePreset.id].join("\u0000")
     : "";
@@ -1565,9 +1637,15 @@ function GenerationModal({
     ...(projectId ? { projectId } : {}),
     options: {
       useReferenceImages: Boolean(activePreset?.referenceImagesEnabled),
-      ...(isFrameImageToImage && referenceImagePath ? { referenceImagePath } : {}),
+      ...(isFrameImageToImage && selectedReferencePath ? {
+        // Use exactly one contract shape: the legacy scalar for one-input
+        // workflows, or the role-aware list for multi-reference workflows.
+        ...(supportsMultipleReferences
+          ? { referenceImages: selectedReferenceImages }
+          : { referenceImagePath: selectedReferencePath }),
+      } : {}),
     },
-  }), [activePreset?.id, activePreset?.referenceImagesEnabled, asset.type, assetPath, isFrameImageToImage, lookPath, projectId, referenceImagePath]);
+  }), [activePreset?.id, activePreset?.maxReferenceImages, activePreset?.referenceImageRoles, activePreset?.referenceImagesEnabled, asset.type, assetPath, isFrameImageToImage, lookPath, projectId, selectedReferenceImages, selectedReferencePath, supportsMultipleReferences]);
 
   useEffect(() => {
     document.body.dataset.aiDramaGeneration = "open";
@@ -1634,7 +1712,7 @@ function GenerationModal({
   // approval cannot be submitted accidentally.
   useEffect(() => {
     setPreview(null);
-  }, [activeProfileId, activePreset?.id, denoise, durationSeconds, frameMode, frames, fps, height, negativePromptDraft, promptDraft, referenceImagePath, seed, width]);
+  }, [activeProfileId, activePreset?.id, denoise, durationSeconds, frameMode, frames, fps, height, negativePromptDraft, promptDraft, referenceImagePaths, seed, width]);
   useEffect(() => {
     if (!assetPath || !hasActiveJobs) return undefined;
     const timer = window.setInterval(() => { void request<{ jobs: ComfyJob[] }>(`/jobs?assetPath=${encodeURIComponent(assetPath)}`)
@@ -1667,7 +1745,13 @@ function GenerationModal({
       fps,
       durationSeconds,
       useReferenceImages: Boolean(activePreset?.referenceImagesEnabled),
-      ...(isFrameImageToImage && referenceImagePath ? { referenceImagePath } : {}),
+      ...(isFrameImageToImage && selectedReferencePath ? {
+        // Keep the request compatible with the server selected above; the two
+        // reference fields are mutually exclusive in the API contract.
+        ...(supportsMultipleReferences
+          ? { referenceImages: selectedReferenceImages }
+          : { referenceImagePath: selectedReferencePath }),
+      } : {}),
     },
   });
 
@@ -1788,10 +1872,39 @@ function GenerationModal({
   }
 
   const profileReady = Boolean(activeProfile?.enabled && activeProfile?.configured);
-  const canSubmit = Boolean(activePreset && profileReady && (!isFrameImageToImage || referenceImagePath));
+  const canSubmit = Boolean(
+    activePreset
+    && profileReady
+    && (!isFrameImageToImage || (referenceImagePaths.length > 0 && hasRequiredFirstFrame)),
+  );
   const supportsInput = (key: string) => Boolean(activePreset?.inputs?.some((input) => input.key === key));
-  const frameModeAvailable = (mode: FrameGenerationMode) => !frameGeneration || availablePresets.some((preset) => preset.id === framePresetId(frameGeneration.target, mode));
+  const frameModeAvailable = (mode: FrameGenerationMode) => !frameGeneration || availablePresets.some((preset) => (
+    preset.id === framePresetId(frameGeneration.target, mode)
+    && (mode !== "imageToImage" || preset.referenceImagesEnabled)
+  ));
   const hasEditableVideoSpec = ["width", "height", "durationSeconds", "frames", "fps"].some(supportsInput);
+  const toggleReferenceImage = (candidate: ShotReferenceVisual) => {
+    const path = candidate.file.path;
+    setReferenceImagePaths((current) => {
+      // A tail frame always starts from the selected first frame. It is a
+      // required base input; the second slot is where an optional person,
+      // scene, or prop reference can be added.
+      if (frameGeneration?.target === "lastFrame") {
+        const firstFramePath = requiredFirstFramePath;
+        if (firstFramePath && current.includes(firstFramePath)) {
+          if (candidate.role === "firstFrame" || maxReferenceImages <= 1) return current;
+        }
+      }
+      if (current.includes(path)) return current.filter((item) => item !== path);
+      // Preserve radio-button behavior for the legacy one-image contract.
+      if (maxReferenceImages <= 1) return [path];
+      // Once the advertised limit is reached, require an explicit deselection
+      // before adding another image so a click never silently drops a choice.
+      if (current.length >= maxReferenceImages) return current;
+      return [...current, path];
+    });
+    setPreview(null);
+  };
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section aria-labelledby="generation-modal-title" aria-modal="true" className="modal-card generation-modal" role="dialog">
       <header className="modal-heading generation-modal-heading">
@@ -1808,27 +1921,42 @@ function GenerationModal({
             {!profileReady ? <p className="generation-inline-error">服务器未配置</p> : null}
           </section>
           {frameGeneration ? <section className="generation-section frame-generation-section">
-            <div aria-label={`${frameGeneration.target === "firstFrame" ? "首帧" : "尾帧"}生成方式`} className="frame-generation-mode-toggle" role="group">
+            <div aria-label={`${frameGenerationLabel(frameGeneration.target)}生成方式`} className="frame-generation-mode-toggle" role="group">
               <button aria-pressed={frameMode === "textToImage"} disabled={!frameModeAvailable("textToImage")} onClick={() => chooseFrameMode("textToImage")} type="button">文生图</button>
               <button aria-pressed={frameMode === "imageToImage"} disabled={!frameModeAvailable("imageToImage")} onClick={() => chooseFrameMode("imageToImage")} type="button">图生图</button>
             </div>
             {isFrameImageToImage ? <div className="frame-reference-picker">
-              <div className="frame-reference-picker-heading"><strong>输入图</strong></div>
+              <div className="frame-reference-picker-heading">
+                <strong>{supportsMultipleReferences ? "参考图" : "输入图"}</strong>
+                <small>{referenceImagePaths.length}/{maxReferenceImages}</small>
+              </div>
               {frameGeneration.candidates.length ? <div className="frame-reference-grid">
                 {frameGeneration.candidates.map((candidate) => {
-                  const selected = referenceImagePath === candidate.file.path;
+                  const selectedIndex = referenceImagePaths.indexOf(candidate.file.path);
+                  const selected = selectedIndex >= 0;
+                  const atLimit = !selected && referenceImagePaths.length >= maxReferenceImages;
+                  const requiredFirstFrame = frameGeneration.target === "lastFrame" && candidate.role === "firstFrame";
                   return <button
                     aria-pressed={selected}
-                    className={`frame-reference-option ${selected ? "is-selected" : ""}`}
+                    aria-label={`${selected && requiredFirstFrame ? "已固定" : selected ? "取消选择" : "选择"}${candidate.detail}${candidate.label}${selected ? `，第 ${selectedIndex + 1} 张` : ""}`}
+                    className={`frame-reference-option ${selected ? "is-selected" : ""} ${requiredFirstFrame ? "is-required" : ""} is-${candidate.role || "reference"}`}
+                    data-reference-role={candidate.role || "referenceImage"}
+                    disabled={atLimit && supportsMultipleReferences}
                     key={candidate.key}
-                    onClick={() => { setReferenceImagePath(candidate.file.path); setPreview(null); }}
+                    onClick={() => toggleReferenceImage(candidate)}
+                    title={requiredFirstFrame ? "尾帧以已选首帧为基准，不能取消" : undefined}
                     type="button"
                   >
                     <img alt={`${candidate.detail}${candidate.label}`} decoding="async" loading="lazy" src={mediaUrl(candidate.file)} />
-                    <span><strong title={candidate.label}>{candidate.label}</strong><small>{candidate.detail}</small></span>
+                    <span className="frame-reference-option-copy">
+                      <strong title={candidate.label}>{candidate.label}</strong>
+                      <small>{candidate.detail}</small>
+                    </span>
+                    {selected ? <span aria-hidden="true" className="frame-reference-option-check">{selectedIndex + 1}</span> : null}
                   </button>;
                 })}
               </div> : <p className="frame-reference-empty">没有可用输入图</p>}
+              {frameGeneration.target === "lastFrame" && isFrameImageToImage && !hasRequiredFirstFrame ? <p className="generation-inline-error">尾帧必须包含已选首帧，请刷新后重新选择。</p> : null}
             </div> : null}
           </section> : null}
           {!isVideo && activePreset ? <section className="generation-section generation-prompt-section">
@@ -1951,6 +2079,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   const [generationTarget, setGenerationTarget] = useState<WorkspaceSelectionAsset | null>(null);
   const [generationFrame, setGenerationFrame] = useState<FrameGenerationRequest | null>(null);
   const [pendingSceneImageLocationPath, setPendingSceneImageLocationPath] = useState<string | null>(null);
+  const [pendingSceneImageCandidates, setPendingSceneImageCandidates] = useState<ShotReferenceVisual[]>([]);
   const [generationPresetId, setGenerationPresetId] = useState<string | undefined>();
   const [generationDurationSeconds, setGenerationDurationSeconds] = useState<string | undefined>();
   const workflowShotRootRef = useRef<string | null>(null);
@@ -2321,13 +2450,29 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   const selectedShotReferenceVisuals = useMemo<ShotReferenceVisual[]>(() => {
     if (selectedAsset?.type !== "shot") return [];
     const visuals: ShotReferenceVisual[] = [];
+    const seen = new Set<string>();
+    const addVisual = (visual: ShotReferenceVisual) => {
+      if (seen.has(visual.file.path)) return;
+      seen.add(visual.file.path);
+      visuals.push(visual);
+    };
+    const sceneFile = activeScene?.scene
+      ? selectedVisualFromAsset(activeScene.scene, ["setting", "reference", "firstFrame", "lastFrame"])
+      : undefined;
+    if (sceneFile) addVisual({
+      key: `scene-${activeScene?.scene?.rootPath || activeScene?.sceneId || selectedAsset.design.sceneId}`,
+      label: activeScene?.sceneId || selectedAsset.design.sceneId,
+      detail: "场次",
+      role: "sceneReference",
+      file: sceneFile,
+    });
     for (const location of effectiveLocationAssetsForSelectedShot) {
       const file = selectedVisualFromAsset(location, ["setting", "reference"]);
-      if (file) visuals.push({ key: `location-${location.rootPath}`, label: location.name, detail: "场景", file });
+      if (file) addVisual({ key: `location-${location.rootPath}`, label: location.name, detail: "场景", role: "sceneReference", file });
     }
     for (const prop of effectivePropAssetsForSelectedShot) {
       const file = selectedVisualFromAsset(prop, ["reference", "candidate"]);
-      if (file) visuals.push({ key: `prop-${prop.rootPath}`, label: prop.name, detail: "道具", file });
+      if (file) addVisual({ key: `prop-${prop.rootPath}`, label: prop.name, detail: "道具", role: "propReference", file });
     }
     for (const entry of effectiveCastForSelectedShot) {
       const character = characterByPath.get(entry.characterPath);
@@ -2338,35 +2483,93 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
         ?? character?.confirmedVisuals.reference
         ?? character?.confirmedVisuals.turnaround
         ?? character?.confirmedVisuals.costume;
-      if (file) visuals.push({
+      if (file) addVisual({
         key: `character-${entry.characterPath}`,
         label: character?.name || displayFileName(entry.characterPath),
         detail: "人物",
+        role: "characterReference",
         file,
       });
     }
     return visuals;
-  }, [characterByPath, effectiveCastForSelectedShot, effectiveLocationAssetsForSelectedShot, effectivePropAssetsForSelectedShot, selectedAsset?.type]);
+  }, [activeScene?.scene, activeScene?.sceneId, characterByPath, effectiveCastForSelectedShot, effectiveLocationAssetsForSelectedShot, effectivePropAssetsForSelectedShot, selectedAsset?.type === "shot" ? selectedAsset.design.sceneId : ""]);
   const frameGenerationCandidates = (target: FrameGenerationTarget): ShotReferenceVisual[] => {
     if (selectedAsset?.type !== "shot") return [];
     const candidates: ShotReferenceVisual[] = [];
     const seen = new Set<string>();
-    const add = (label: string, detail: string, file: AssetFile | undefined) => {
+    const add = (label: string, detail: string, file: AssetFile | undefined, role?: string) => {
       if (!file || !isImage(file) || seen.has(file.path)) return;
       seen.add(file.path);
-      candidates.push({ key: `${detail}-${file.path}`, label, detail, file });
+      candidates.push({ key: `${detail}-${file.path}`, label, detail, role, file });
     };
-    if (target === "lastFrame") add("已选首帧", "首帧", selectedShotFirstFrame);
-    add("镜头专属参考图", "镜头", selectedShotReferenceSlot ? selectedSlotVisual(selectedShotReferenceSlot) : undefined);
-    add("镜头候选图", "镜头", selectedShotCandidateSlot ? selectedSlotVisual(selectedShotCandidateSlot) : undefined);
+    if (target === "lastFrame") add("已选首帧", "首帧", selectedShotFirstFrame, "firstFrame");
+    add("镜头专属参考图", "镜头", selectedShotReferenceSlot ? selectedSlotVisual(selectedShotReferenceSlot) : undefined, "referenceImage");
+    add("镜头候选图", "镜头", selectedShotCandidateSlot ? selectedSlotVisual(selectedShotCandidateSlot) : undefined, "referenceImage");
     add(activeScene?.sceneId || selectedAsset.design.sceneId, "场次", activeScene?.scene
       ? selectedVisualFromAsset(activeScene.scene, ["setting", "reference", "firstFrame", "lastFrame"])
-      : undefined);
+      : undefined, "sceneReference");
     for (const location of effectiveLocationAssetsForSelectedShot) {
-      add(location.name, "场景", selectedVisualFromAsset(location, ["setting", "reference", "candidate"]));
+      add(location.name, "场景", selectedVisualFromAsset(location, ["setting", "reference", "candidate"]), "sceneReference");
     }
-    for (const visual of selectedShotReferenceVisuals) add(visual.label, visual.detail, visual.file);
-    return candidates;
+    for (const visual of selectedShotReferenceVisuals) add(visual.label, visual.detail, visual.file, visual.role);
+    const roleOrder: Record<string, number> = {
+      firstFrame: 0,
+      sceneReference: 1,
+      characterReference: 2,
+      propReference: 3,
+      referenceImage: 4,
+    };
+    return candidates.sort((left, right) => (
+      (roleOrder[left.role || "referenceImage"] ?? 9) - (roleOrder[right.role || "referenceImage"] ?? 9)
+    ));
+  };
+  // Direct scene-asset generation uses the same two-reference picker as the
+  // shot workflow. There is no shot binding in that entry point, so expose the
+  // project's explicitly selected scene, character, and prop visuals.
+  const sceneAssetGenerationCandidates = (targetAsset: WorkspaceSelectionAsset): ShotReferenceVisual[] => {
+    if (targetAsset.type !== "location" && targetAsset.type !== "scene") return [];
+    const candidates: ShotReferenceVisual[] = [];
+    const seen = new Set<string>();
+    const add = (label: string, detail: string, file: AssetFile | undefined, role: string) => {
+      if (!file || !isImage(file) || seen.has(file.path)) return;
+      seen.add(file.path);
+      candidates.push({ key: `${detail}-${file.path}`, label, detail, role, file });
+    };
+    const addLocation = (location: LocationAsset) => add(
+      location.name,
+      "场景",
+      selectedVisualFromAsset(location, ["setting", "reference", "candidate"]),
+      "sceneReference",
+    );
+    const addCharacter = (character: CharacterAsset) => {
+      add(character.name, "人物", selectedVisualFromAsset(character, ["reference", "turnaround", "costume"]), "characterReference");
+      for (const look of character.looks) {
+        add(`${character.name} · ${look.name}`, "人物", selectedVisualFromAsset(look, ["reference", "turnaround", "costume"]), "characterReference");
+      }
+    };
+    const addProp = (prop: PropAsset) => add(
+      prop.name,
+      "道具",
+      selectedVisualFromAsset(prop, ["reference", "candidate"]),
+      "propReference",
+    );
+    if (targetAsset.type === "location") addLocation(targetAsset);
+    else if (targetAsset.type === "scene") add(
+      targetAsset.sceneId,
+      "场次",
+      selectedVisualFromAsset(targetAsset, ["setting", "reference", "firstFrame", "lastFrame", "candidate"]),
+      "sceneReference",
+    );
+    for (const location of locationAssets) addLocation(location);
+    for (const scene of sceneAssets) {
+      add(scene.sceneId, "场次", selectedVisualFromAsset(scene, ["setting", "reference", "firstFrame", "lastFrame", "candidate"]), "sceneReference");
+    }
+    for (const character of characterAssets) addCharacter(character);
+    for (const prop of propAssets) addProp(prop);
+    const roleOrder: Record<string, number> = { sceneReference: 0, characterReference: 1, propReference: 2 };
+    return candidates.sort((left, right) => (
+      (roleOrder[left.role || ""] ?? 9) - (roleOrder[right.role || ""] ?? 9)
+    ));
   };
   const hasShotReference = hasSelectedShotReference || hasSelectedSceneReference || hasSelectedCharacterReference || hasSelectedPropReference;
   const hasSavedShotBrief = Boolean(
@@ -2587,6 +2790,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
           setGenerationTarget(null);
           setGenerationDurationSeconds(undefined);
           setGenerationPresetId(undefined);
+          setPendingSceneImageCandidates([]);
         }
       }
     };
@@ -2615,12 +2819,14 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     const location = locationAssets.find((asset) => asset.rootPath === pendingSceneImageLocationPath);
     if (!location) return;
     setPendingSceneImageLocationPath(null);
+    const candidates = pendingSceneImageCandidates;
+    setPendingSceneImageCandidates([]);
     setGenerationTarget(location);
-    setGenerationFrame(null);
+    setGenerationFrame({ target: "sceneReference", candidates });
     setGenerationDurationSeconds(undefined);
     setGenerationPresetId("scene-image-v1");
     setModal("generation");
-  }, [locationAssets, notify, pendingSceneImageLocationPath]);
+  }, [locationAssets, pendingSceneImageCandidates, pendingSceneImageLocationPath]);
 
   const handleGenerationJobsObserved = useCallback((assetPath: string, jobs: ComfyJob[]) => {
     const result = reconcileComfyJobWatches(generationJobWatchesRef.current, assetPath, jobs);
@@ -2633,7 +2839,13 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     ));
     if (result.archivedCount > 0) {
       setPendingGenerationRefreshes((current) => current + result.archivedCount);
-      const sceneImageJob = result.archivedJobs.find((job) => job.presetLabel === "场景图");
+      // Both text-to-image and image-to-image scene presets archive into the
+      // location's 场景图 slot. Match the shared label prefix so either result
+      // is promoted to the current reference automatically.
+      const sceneImageJob = result.archivedJobs.find((job) => (
+        (job.presetLabel || "").startsWith("场景图")
+        && job.outputPaths?.some((path) => path.startsWith(`${assetPath}/场景图/`))
+      ));
       const outputPath = sceneImageJob?.outputPaths?.find((path) => path.startsWith(`${assetPath}/场景图/`));
       const fileName = outputPath?.split("/").filter(Boolean).at(-1);
       if (fileName && assetPath.startsWith("场景/")) {
@@ -2790,6 +3002,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       setModal(null);
       setGenerationTarget(null);
       setPendingSceneImageLocationPath(null);
+      setPendingSceneImageCandidates([]);
       setGenerationDurationSeconds(undefined);
       setGenerationPresetId(undefined);
       setMediaPreview(null);
@@ -3683,14 +3896,29 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     );
   };
 
+  const openAssetGeneration = async () => {
+    if (!selectedAsset) return;
+    const frameGeneration = selectedAsset.type === "location" || selectedAsset.type === "scene"
+      ? { target: "sceneReference" as const, candidates: sceneAssetGenerationCandidates(selectedAsset) }
+      : undefined;
+    await openGeneration(undefined, false, frameGeneration);
+  };
+
   const handleGenerateSceneImageFromShot = async () => {
     if (!selectedAsset || selectedAsset.type !== "shot" || selectedAsset.isDraft) return;
     if (!designDraft.prompt.trim() && !designDraft.content.trim()) {
       notify("error", "请先保存镜头画面或提示词");
       return;
     }
+    // Build this from the current draft before saving: React state updates from
+    // `handleSave()` are asynchronous, but the draft already contains any new
+    // character override the user just added.
+    const referenceCandidates = frameGenerationCandidates("sceneReference");
     if (hasUnsavedShotDesign && !(await handleSave())) return;
 
+    // Keep the shot's selected person/scene/prop visuals with the request while
+    // the reusable location asset is being prepared and the snapshot refreshes.
+    setPendingSceneImageCandidates(referenceCandidates);
     setBusy(true);
     try {
       const result = await postAction<{ path?: string }>({
@@ -3701,6 +3929,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       if (!(await loadSnapshot(true))) throw new Error("场景资产已准备，但刷新失败。请重试。");
       setPendingSceneImageLocationPath(result.path);
     } catch (error) {
+      setPendingSceneImageCandidates([]);
       notify("error", error instanceof Error ? error.message : "无法准备场景图");
     } finally {
       setBusy(false);
@@ -3826,7 +4055,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
             {selectedAsset ? <div className="asset-studio-actions">
               {isDirty || selectedAsset.type === "shot" && selectedAsset.isDraft ? <span className={`asset-state-pill ${isDirty ? "is-dirty" : ""}`}>{isDirty ? "未保存" : "待导入"}</span> : null}
               {selectedAsset.type === "shot" && selectedShotIndex >= 0 ? <div className="shot-stepper" aria-label="镜头导航"><span>{String(selectedShotIndex + 1).padStart(2, "0")} / {String(activeShotAssets.length).padStart(2, "0")}</span><button aria-label="上一个镜头" disabled={busy || selectedShotIndex === 0} onClick={() => moveSelectedShot(-1)} type="button">‹</button><button aria-label="下一个镜头" disabled={busy || selectedShotIndex === activeShotAssets.length - 1} onClick={() => moveSelectedShot(1)} type="button">›</button></div> : null}
-              {selectedAsset.type === "character" || selectedAsset.type === "location" || selectedAsset.type === "prop" ? <button className="studio-action-button generation-open-button" disabled={busy} onClick={() => void openGeneration()} type="button">生成</button> : null}
+              {selectedAsset.type === "character" || selectedAsset.type === "location" || selectedAsset.type === "prop" ? <button className="studio-action-button generation-open-button" disabled={busy} onClick={() => void openAssetGeneration()} type="button">生成</button> : null}
               {selectedAsset.type !== "shot" || !selectedAsset.isDraft ? <>
                 {selectedAsset.type !== "scene" ? <button className="studio-action-button" disabled={busy} onClick={openRename} type="button">重命名</button> : null}
                 <button className="studio-action-button is-danger" disabled={busy} onClick={() => setModal("trash")} type="button">移入回收站</button>
@@ -4187,9 +4416,13 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
         frameGeneration={generationFrame}
         initialDurationSeconds={generationDurationSeconds}
         initialPresetId={generationPresetId}
+        // Reset frame mode and selected references when the target changes;
+        // otherwise a still-mounted dialog can carry a person's choices into
+        // a different shot, frame, or reusable scene asset.
+        key={`${generationTarget.rootPath}:${generationFrame?.target || "asset"}:${generationPresetId || ""}`}
         lookPath={generationTarget.type === "character" && selectedAsset?.type === "character" ? selectedCharacterLook?.rootPath : undefined}
         projectId={projectId ?? undefined}
-        onClose={() => { setModal(null); setGenerationTarget(null); setGenerationFrame(null); setGenerationDurationSeconds(undefined); setGenerationPresetId(undefined); }}
+        onClose={() => { setModal(null); setGenerationTarget(null); setGenerationFrame(null); setPendingSceneImageCandidates([]); setGenerationDurationSeconds(undefined); setGenerationPresetId(undefined); }}
         onJobsObserved={handleGenerationJobsObserved}
         onQueued={handleGenerationQueued}
       /> : modal === "trashList" ? <TrashModal
