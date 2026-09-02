@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { reconcileComfyJobWatches, watchedComfyAssetPaths } from "./comfy-ui-state.js";
+import { isActiveComfyJob, reconcileComfyJobWatches, watchedComfyAssetPaths } from "./comfy-ui-state.js";
 
 import type {
   AssetFile,
@@ -110,6 +110,10 @@ const EMPTY_DESIGN: ShotDesign = {
   camera: "",
   prompt: "",
   negativePrompt: "",
+  firstFramePrompt: "",
+  firstFrameNegativePrompt: "",
+  lastFramePrompt: "",
+  lastFrameNegativePrompt: "",
   references: "",
   characterOverrides: [],
   status: "待生成",
@@ -132,6 +136,7 @@ function formatSize(bytes: number): string {
 function mediaUrl(file: AssetFile): string {
   const query = new URLSearchParams({ path: file.path });
   if (file.projectId) query.set("projectId", file.projectId);
+  if (file.updatedAt) query.set("v", file.updatedAt);
   return `${WORKBENCH_API_BASE}/asset?${query.toString()}`;
 }
 
@@ -158,6 +163,16 @@ function selectedSlotVisualFiles(slot: AssetSlot): AssetFile[] {
 
 function selectedSlotVisual(slot: AssetSlot): AssetFile | undefined {
   return selectedSlotVisualFiles(slot)[0];
+}
+
+function selectedVisualFromAsset(asset: { slots: AssetSlot[] }, keys: string[]): AssetFile | undefined {
+  for (const key of keys) {
+    const slot = assetSlot(asset, key);
+    if (!slot) continue;
+    const file = selectedSlotVisual(slot);
+    if (file) return file;
+  }
+  return undefined;
 }
 
 function assetSlot(asset: { slots: AssetSlot[] }, key: string): AssetSlot | undefined {
@@ -334,14 +349,6 @@ function displayFileName(relativePath: string): string {
   return relativePath.split(/[\\/]/).filter(Boolean).pop() || relativePath;
 }
 
-function displaySelectedVisualName(fileName: string): string {
-  const extensionIndex = fileName.lastIndexOf(".");
-  const baseName = extensionIndex > 0 ? fileName.slice(0, extensionIndex) : fileName;
-  const extension = extensionIndex > 0 ? fileName.slice(extensionIndex) : "";
-  // `-已选` is persistence metadata. The surrounding UI already conveys selection.
-  return `${baseName.replace(/-已选$/u, "")}${extension}`;
-}
-
 function characterInitial(name: string): string {
   return Array.from(name.trim())[0] || "人";
 }
@@ -408,11 +415,6 @@ function PrimaryMedia({
         )}
       </div>
       <div className="asset-primary-meta">
-        <div>
-          <p className="eyebrow">主预览</p>
-          <strong title={file.name}>{file.name}</strong>
-          <small>{formatSize(file.size)}</small>
-        </div>
         <button className="asset-primary-open" onClick={onPreview} type="button">
           {isImage(file) ? "查看大图" : "全屏播放"}
         </button>
@@ -453,10 +455,8 @@ function CharacterVisualBoard({
         >
           <img alt={`${characterName} · ${sourceLabel} · 已选${primary.label}`} src={mediaUrl(primary.file)} />
         </button>
-        <p className="character-visual-file-name" title={primary.file.name}>{displaySelectedVisualName(primary.file.name)}</p>
       </div>
       {supportingVisuals.length ? <div className="character-visual-supporting" aria-label="已选辅助视觉">
-        <p className="eyebrow">已选定妆与参考</p>
         <div className="character-visual-supporting-grid">
           {supportingVisuals.map((visual) => <article className="character-visual-supporting-card" key={visual.slot}>
             <button
@@ -465,11 +465,10 @@ function CharacterVisualBoard({
               onClick={() => onPreview(visual.file)}
               type="button"
             >
-              <img alt={`${characterName} · ${sourceLabel} · 已选${visual.label}`} src={mediaUrl(visual.file)} />
+            <img alt={`${characterName} · ${sourceLabel} · 已选${visual.label}`} decoding="async" loading="lazy" src={mediaUrl(visual.file)} />
             </button>
             <div>
               <strong>{visual.label}</strong>
-              <small title={visual.file.name}>{displaySelectedVisualName(visual.file.name)}</small>
             </div>
           </article>)}
         </div>
@@ -546,8 +545,8 @@ function AssetCard({
       </div>
       <span className="asset-card-copy">
         <strong>{asset.name}</strong>
-        <small className="character-role-label">{asset.type === "character" ? asset.roleCategory : asset.type === "location" ? "地点/环境资产" : "道具资产"}</small>
-        {asset.type === "location" || asset.type === "prop" ? <small className="asset-reference-count">{sceneReferenceCount ? `被 ${sceneReferenceCount} 个场次引用` : "尚未被场次引用"}</small> : null}
+        {asset.type === "character" ? <small className="character-role-label">{asset.roleCategory}</small> : null}
+        {(asset.type === "location" || asset.type === "prop") && sceneReferenceCount ? <small className="asset-reference-count">被 {sceneReferenceCount} 个场次引用</small> : null}
       </span>
     </button>
   );
@@ -571,9 +570,8 @@ function SceneAssetCard({
     >
       <span aria-hidden="true" className="scene-asset-card-mark">场</span>
       <span className="scene-asset-card-copy">
-        <small>场次资产</small>
         <strong>{scene.sceneId}</strong>
-        <em>{scene.shotCount} 个镜头 · {scene.isComplete ? "场次资料已就绪" : "待补齐场次资料"}</em>
+        <em>{scene.shotCount} 个镜头</em>
       </span>
     </button>
   );
@@ -586,6 +584,26 @@ type ShotWorkflowNode = {
   label: string;
   state: "done" | "current" | "pending";
 };
+
+type ShotReferenceVisual = {
+  key: string;
+  label: string;
+  detail: string;
+  file: AssetFile;
+};
+
+type FrameGenerationTarget = "firstFrame" | "lastFrame";
+type FrameGenerationMode = "textToImage" | "imageToImage";
+
+type FrameGenerationRequest = {
+  target: FrameGenerationTarget;
+  candidates: ShotReferenceVisual[];
+};
+
+function framePresetId(target: FrameGenerationTarget, mode: FrameGenerationMode): string {
+  if (target === "firstFrame") return mode === "imageToImage" ? "shot-first-frame-img2img-v1" : "shot-first-frame-v1";
+  return mode === "imageToImage" ? "shot-last-frame-img2img-v1" : "shot-last-frame-v1";
+}
 
 function ShotWorkflowStepper({
   activeStep,
@@ -624,8 +642,7 @@ function WorkflowFramePreview({
 }) {
   return <article className={`workflow-frame-preview ${file ? "has-file" : ""}`}>
     <p className="eyebrow">{label}</p>
-    {file && isImage(file) ? <button aria-label={`查看${label}`} onClick={() => onPreview(file)} type="button"><img alt={label} src={mediaUrl(file)} /></button> : <div className="workflow-frame-empty">未选择</div>}
-    <strong title={file?.name}>{file ? displaySelectedVisualName(file.name) : label}</strong>
+    {file && isImage(file) ? <button aria-label={`查看${label}`} onClick={() => onPreview(file)} type="button"><img alt={label} decoding="async" loading="lazy" src={mediaUrl(file)} /></button> : <div className="workflow-frame-empty">未选择</div>}
   </article>;
 }
 
@@ -673,33 +690,30 @@ function SlotPanel({
     : confirmedFile ?? markedSelectedFiles[0];
   const effectiveConfirmedSourcePath = effectiveConfirmedFile?.path;
   const candidateCountLabel = `${selectionCandidates.length} 张候选`;
-  const confirmedName = effectiveConfirmedFile?.name;
   const selectionAction = slot.key === "firstFrame" || slot.key === "lastFrame" ? "设为已选" : "设为参考";
   const uploadLabel = canConfirmSelection
-    ? visualFiles.length ? "继续添加候选" : `添加${slot.label}候选`
-    : `添加${slot.label}`;
+    ? "添加候选"
+    : "上传";
   return (
     <article className={`asset-slot ${disabled ? "is-disabled" : ""}`}>
       <div className="asset-slot-heading">
         <div>
-          <p className="eyebrow">{canConfirmSelection ? "候选池 · 多张可选" : "资料槽"}</p>
           <h3>{slot.label}</h3>
         </div>
         <div className="asset-slot-heading-actions">
           {hasSelectionConflict ? <span className="asset-slot-confirmed is-conflict" title="同一资料槽中不应有多张带 -已选 的图片">需整理</span> : null}
           {effectiveConfirmedFile ? <span className="asset-slot-confirmed" title={`当前选择：${effectiveConfirmedFile.name}`}>已选</span> : null}
-          <span className={`asset-slot-count ${canConfirmSelection ? "asset-slot-candidate-count" : ""}`} title={canConfirmSelection ? candidateCountLabel : `${visualFiles.length} 个资料`}>
-            {canConfirmSelection ? candidateCountLabel : visualFiles.length}
-          </span>
+          {visualFiles.length > 1 ? <span className="asset-slot-count" title={canConfirmSelection ? candidateCountLabel : `${visualFiles.length} 个资料`}>
+            {canConfirmSelection ? selectionCandidates.length : visualFiles.length}
+          </span> : null}
         </div>
       </div>
       <div className="asset-slot-body">
-        {canConfirmSelection ? <div className={`turnaround-selection-summary ${effectiveConfirmedFile ? "has-confirmed" : ""} ${hasSelectionConflict ? "has-conflict" : ""}`}>
+        {canConfirmSelection && hasSelectionConflict ? <div className="turnaround-selection-summary has-conflict">
           <div>
-            <strong>{hasSelectionConflict ? "检测到多个已选图" : effectiveConfirmedFile ? "当前选择" : "尚未选择参考图"}</strong>
-            <span title={hasSelectionConflict ? markedSelectedFiles.map((file) => file.name).join("、") : confirmedName}>{hasSelectionConflict ? `${markedSelectedFiles.length} 张候选被同时标为已选` : confirmedName || "从下方候选中任选一张"}</span>
+            <strong>检测到多个已选图</strong>
+            <span title={markedSelectedFiles.map((file) => file.name).join("、")}>{markedSelectedFiles.length} 张候选被同时标为已选</span>
           </div>
-          <small>{hasSelectionConflict ? "点击任意一张“统一选此图”即可自动恢复其余候选名。" : visualFiles.length ? "其余候选会保留，可随时重新选择。" : "可一次或分批添加多张候选图。"}</small>
         </div> : null}
         {visualFiles.length ? (
           <div className="asset-file-grid">
@@ -716,10 +730,6 @@ function SlotPanel({
                 >
                   {previewFile(file, file.name)}
                 </button>
-                <div className="asset-file-meta">
-                  <strong title={file.name}>{file.name}</strong>
-                  <small>{formatSize(file.size)}</small>
-                </div>
                 {canConfirmSelection && isImage(file) ? <button
                   aria-label={hasSelectionConflict ? `将 ${file.name} 作为唯一${slot.label}${selectionAction === "设为已选" ? "已选图" : "参考"}，并恢复同槽其他已选候选` : isConfirmed ? `${file.name} 是当前选择` : `将 ${file.name} ${selectionAction}`}
                   className={`asset-file-confirm ${isConfirmed ? "is-confirmed" : ""}`}
@@ -741,7 +751,7 @@ function SlotPanel({
             })}
           </div>
         ) : (
-          <div className="slot-empty"><span className="slot-empty-icon" aria-hidden="true">＋</span><span>尚无资料</span><small>{canConfirmSelection ? `${slot.label}文件夹中还没有候选图片` : `${slot.label}文件夹中还没有图片或视频`}</small></div>
+          <div aria-label="尚无资料" className="slot-empty"><span className="slot-empty-icon" aria-hidden="true">＋</span></div>
         )}
       </div>
       <input
@@ -987,7 +997,6 @@ function ProjectPicker({
   const [mode, setMode] = useState<"list" | "create">("list");
   const [projects, setProjects] = useState<WorkbenchProject[]>([]);
   const [activeProjectId, setActiveProjectId] = useState("");
-  const [libraryLabel, setLibraryLabel] = useState("");
   const [search, setSearch] = useState("");
   const [newProjectName, setNewProjectName] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1024,7 +1033,6 @@ function ProjectPicker({
         : [];
       setProjects(nextProjects);
       setActiveProjectId(currentProjectId || (typeof data.activeProjectId === "string" ? data.activeProjectId : ""));
-      setLibraryLabel(typeof data.libraryLabel === "string" ? data.libraryLabel : "");
     } catch (loadError) {
       setProjects([]);
       setError(loadError instanceof Error ? loadError.message : "无法读取项目列表");
@@ -1133,7 +1141,6 @@ function ProjectPicker({
         type="button"
       >
         <span aria-hidden="true" className="status-dot" />
-        <span className="project-switcher-label">当前项目</span>
         <strong>{activeProjectName}</strong>
         <span aria-hidden="true" className="project-switcher-chevron" />
       </button>
@@ -1142,7 +1149,6 @@ function ProjectPicker({
         {mode === "list" ? <>
           <header className="project-picker-heading">
             <div>
-              <p className="eyebrow">{libraryLabel || "项目库"}</p>
               <h2>项目</h2>
             </div>
             <button aria-label="关闭项目选择器" className="project-picker-close" disabled={submitting} onClick={() => closePicker(true)} type="button">×</button>
@@ -1168,7 +1174,7 @@ function ProjectPicker({
                 <span className="project-picker-option-copy"><strong>{project.name}</strong>{updatedAt ? <small>{updatedAt}</small> : null}</span>
                 {current ? <span className="project-picker-current">当前</span> : null}
               </button>;
-            }) : <p className="project-picker-status">{search ? "没有匹配的项目" : "项目库中还没有可切换项目"}</p>}
+            }) : <p className="project-picker-status">{search ? "没有匹配的项目" : "暂无项目"}</p>}
           </div>
           <footer className="project-picker-footer">
             <button className="project-picker-create" disabled={loading || submitting} onClick={openCreate} type="button"><span aria-hidden="true">＋</span>新建项目</button>
@@ -1176,7 +1182,6 @@ function ProjectPicker({
         </> : <form className="project-create-form" onSubmit={handleCreateSubmit}>
           <header className="project-picker-heading">
             <div>
-              <p className="eyebrow">{libraryLabel || "项目库"}</p>
               <h2>新建项目</h2>
             </div>
             <button aria-label="返回项目列表" className="project-picker-close" disabled={submitting} onClick={showList} type="button">←</button>
@@ -1185,7 +1190,6 @@ function ProjectPicker({
             <span>项目名称</span>
             <input autoComplete="off" disabled={submitting} onChange={(event) => setNewProjectName(event.target.value)} placeholder="例如：第一季-边关篇" ref={createInputRef} value={newProjectName} />
           </label>
-          <p className="project-create-hint">会在当前项目库中建立同名文件夹，并准备分镜主工作流与人物、地点/环境、道具资产库。</p>
           {error ? <p className="project-create-error" role="alert">{error}</p> : null}
           <footer className="project-create-actions">
             <button className="text-button" disabled={submitting} onClick={showList} type="button">取消</button>
@@ -1296,7 +1300,6 @@ function ProjectStructureViewer({
       {open ? <section aria-label="项目目录和文件结构" className="project-structure-panel" id={panelId}>
         <header className="project-structure-head">
           <div>
-            <p className="eyebrow">只读项目结构</p>
             <h2>{structure?.rootName || "项目目录"}</h2>
           </div>
           <div className="project-structure-actions">
@@ -1312,7 +1315,7 @@ function ProjectStructureViewer({
             expandedPaths={expandedPaths}
             nodes={structure.tree}
             onTogglePath={onTogglePath}
-          /> : <p className="project-structure-status">项目中还没有可展示的文件。</p>}
+          /> : <p className="project-structure-status">暂无文件</p>}
         </div>
       </section> : null}
       {!hideTrigger ? <button
@@ -1335,7 +1338,7 @@ function ProfilePreview({ content }: { content: string }) {
   const cleanInline = (value: string) => value.replace(/\*\*/g, "").replace(/`/g, "");
 
   if (!content.trim()) {
-    return <div className="profile-preview is-empty">还没有角色设定，点击“编辑”开始补充。</div>;
+    return <div className="profile-preview is-empty">暂无内容</div>;
   }
 
   let inCodeBlock = false;
@@ -1371,17 +1374,10 @@ function DraftSummary({ design }: { design: ShotDesign }) {
   ] as const;
   return (
     <section className="draft-summary" aria-label="分镜草稿摘要">
-      <div className="draft-summary-lead">
-        <span className="draft-summary-mark" aria-hidden="true">剧</span>
-        <div>
-          <strong>这是可导入的剧本镜头</strong>
-          <p>确认内容后建立资产，原始剧本不会被改写。</p>
-        </div>
-      </div>
-      <dl className="draft-summary-grid">
+        <dl className="draft-summary-grid">
         {items.map(([label, value]) => <div className="draft-summary-item" key={label}><dt>{label}</dt><dd>{value || "未填写"}</dd></div>)}
       </dl>
-      <div className="draft-summary-block"><h4>画面描述</h4><p>{design.content || "原始脚本没有填写画面描述。"}</p></div>
+      <div className="draft-summary-block"><h4>画面描述</h4><p>{design.content || "未填写"}</p></div>
       <div className="draft-summary-block"><h4>台词</h4><p>{design.dialogue || "无台词"}</p></div>
       <div className="draft-summary-block"><h4>运镜</h4><p>{design.camera || "未填写"}</p></div>
     </section>
@@ -1444,6 +1440,8 @@ type ComfyJob = {
   message?: string;
   error?: string;
   errorCode?: string;
+  prompt?: string;
+  negativePrompt?: string;
   outputPaths?: string[];
 };
 
@@ -1463,17 +1461,12 @@ type ComfyPreview = {
   errors?: string[];
 };
 
-function isLegacyReferenceUploadFailure(job: ComfyJob): boolean {
-  return job.status === "failed" && /upload role:\s*referenceImage/iu.test(job.error || "");
-}
-
 function formatComfyJobStatus(job: ComfyJob): string {
   if (job.status === "completed") {
     if (job.outputPaths?.length) return "候选已归档";
     if (job.message === "Comfy Bridge 模拟验证完成。") return "模拟验证完成（未生成媒体）";
     return "任务已完成";
   }
-  if (isLegacyReferenceUploadFailure(job)) return "历史任务失败（旧版参考图）";
   return ({
     queued: "待提交",
     uploading: "上传素材中",
@@ -1487,12 +1480,12 @@ function formatComfyJobStatus(job: ComfyJob): string {
 }
 
 function formatComfyJobDetail(job: ComfyJob): string {
-  if (isLegacyReferenceUploadFailure(job)) return " · 点击重试会按当前纯文生图重新提交";
   return job.error ? ` · ${job.error}` : "";
 }
 
 function GenerationModal({
   asset,
+  frameGeneration,
   initialDurationSeconds,
   initialPresetId,
   lookPath,
@@ -1502,6 +1495,7 @@ function GenerationModal({
   onQueued,
 }: {
   asset: WorkspaceSelectionAsset;
+  frameGeneration?: FrameGenerationRequest | null;
   initialDurationSeconds?: string;
   initialPresetId?: string;
   lookPath?: string;
@@ -1512,7 +1506,6 @@ function GenerationModal({
 }) {
   const [profiles, setProfiles] = useState<ComfyProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState("");
-  const [configPath, setConfigPath] = useState("");
   const [presets, setPresets] = useState<ComfyPreset[]>([]);
   const [presetId, setPresetId] = useState("");
   const [jobs, setJobs] = useState<ComfyJob[]>([]);
@@ -1531,17 +1524,30 @@ function GenerationModal({
   const [promptDraft, setPromptDraft] = useState<string | null>(null);
   const [negativePromptDraft, setNegativePromptDraft] = useState<string | null>(null);
   const [promptLoading, setPromptLoading] = useState(false);
+  const [frameMode, setFrameMode] = useState<FrameGenerationMode>(() => (
+    frameGeneration?.target === "lastFrame" ? "imageToImage" : "textToImage"
+  ));
+  const [referenceImagePath, setReferenceImagePath] = useState(() => (
+    frameGeneration?.target === "lastFrame" ? frameGeneration.candidates[0]?.file.path ?? "" : ""
+  ));
   const promptInitializationKeyRef = useRef<string | null>(null);
+  const promptEditedRef = useRef(false);
+  const presetIdRef = useRef("");
   const assetPath = asset.rootPath;
   const availablePresets = presets.filter((preset) => preset.assetTypes.includes(asset.type));
-  // A workflow opened from a shot step is intentionally locked. If the
-  // server does not expose that preset, keep the modal unavailable instead
-  // of silently falling back to an unrelated workflow.
-  const activePreset = initialPresetId
-    ? availablePresets.find((preset) => preset.id === initialPresetId)
+  const frameModePresetId = frameGeneration ? framePresetId(frameGeneration.target, frameMode) : undefined;
+  const initialFramePresetIdRef = useRef<string | undefined>(frameModePresetId);
+  const initialRequestedPresetId = frameGeneration ? initialFramePresetIdRef.current : initialPresetId;
+  const lockedPresetId = frameModePresetId ?? initialPresetId;
+  // A shot frame may switch only between its matching text-to-image and
+  // image-to-image presets. Other workflow entries stay fixed as before.
+  const activePreset = lockedPresetId
+    ? availablePresets.find((preset) => preset.id === lockedPresetId)
     : availablePresets.find((preset) => preset.id === presetId) ?? availablePresets[0];
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId);
   const isVideo = activePreset?.outputKind === "video";
+  const isFrameImageToImage = Boolean(frameGeneration && frameMode === "imageToImage");
+  const hasActiveJobs = jobs.some(isActiveComfyJob);
   const promptInitializationKey = !isVideo && activePreset
     ? [projectId || "", asset.type, assetPath, lookPath || "", activePreset.id].join("\u0000")
     : "";
@@ -1551,8 +1557,11 @@ function GenerationModal({
     ...(asset.type === "character" && lookPath ? { lookPath } : {}),
     presetId: activePreset?.id,
     ...(projectId ? { projectId } : {}),
-    options: { useReferenceImages: Boolean(activePreset?.referenceImagesEnabled) },
-  }), [activePreset?.id, activePreset?.referenceImagesEnabled, asset.type, assetPath, lookPath, projectId]);
+    options: {
+      useReferenceImages: Boolean(activePreset?.referenceImagesEnabled),
+      ...(isFrameImageToImage && referenceImagePath ? { referenceImagePath } : {}),
+    },
+  }), [activePreset?.id, activePreset?.referenceImagesEnabled, asset.type, assetPath, isFrameImageToImage, lookPath, projectId, referenceImagePath]);
 
   useEffect(() => {
     document.body.dataset.aiDramaGeneration = "open";
@@ -1584,18 +1593,18 @@ function GenerationModal({
       ]);
       setProfiles(configResponse.profiles);
       setActiveProfileId(configResponse.activeProfileId);
-      setConfigPath(configResponse.configPath || "");
       setPresets(presetResponse.presets);
       setJobs(jobResponse.jobs);
       onJobsObserved(assetPath, jobResponse.jobs);
       const matching = presetResponse.presets.filter((preset) => preset.assetTypes.includes(asset.type));
-      const next = initialPresetId
-        ? matching.find((preset) => preset.id === initialPresetId)
-        : matching.find((preset) => preset.id === presetId) ?? matching[0];
+      const next = initialRequestedPresetId
+        ? matching.find((preset) => preset.id === initialRequestedPresetId)
+        : matching.find((preset) => preset.id === presetIdRef.current) ?? matching[0];
       if (!next) {
-        if (initialPresetId) setError("当前流程所需的受控工作流不可用，请检查 ComfyUI 预设配置。");
+        if (initialRequestedPresetId) setError("当前流程所需的受控工作流不可用，请检查 ComfyUI 预设配置。");
         return;
       }
+      presetIdRef.current = next.id;
       setPresetId(next.id);
       setWidth(String(next.defaults?.width ?? 1024));
       setHeight(String(next.defaults?.height ?? 1024));
@@ -1603,7 +1612,7 @@ function GenerationModal({
       setDenoise(String(next.defaults?.denoise ?? 0.65));
       setFrames(String(next.defaults?.frames ?? 121));
       setFps(String(next.defaults?.fps ?? 24));
-      setDurationSeconds(initialPresetId === "h3-first-last-video-v1" && initialDurationSeconds
+      setDurationSeconds(initialRequestedPresetId === "h3-first-last-video-v1" && initialDurationSeconds
         ? initialDurationSeconds
         : String(next.defaults?.durationSeconds ?? 5));
     } catch (reason) {
@@ -1611,7 +1620,7 @@ function GenerationModal({
     } finally {
       setLoading(false);
     }
-  }, [asset.type, assetPath, initialDurationSeconds, initialPresetId, onJobsObserved, presetId, request]);
+  }, [asset.type, assetPath, initialDurationSeconds, initialRequestedPresetId, onJobsObserved, request]);
 
   useEffect(() => { void reload(); }, [reload]);
   // A preflight result is tied to the exact server, preset, and parameter
@@ -1619,16 +1628,16 @@ function GenerationModal({
   // approval cannot be submitted accidentally.
   useEffect(() => {
     setPreview(null);
-  }, [activeProfileId, activePreset?.id, denoise, durationSeconds, frames, fps, height, negativePromptDraft, promptDraft, seed, width]);
+  }, [activeProfileId, activePreset?.id, denoise, durationSeconds, frameMode, frames, fps, height, negativePromptDraft, promptDraft, referenceImagePath, seed, width]);
   useEffect(() => {
-    if (!assetPath) return undefined;
+    if (!assetPath || !hasActiveJobs) return undefined;
     const timer = window.setInterval(() => { void request<{ jobs: ComfyJob[] }>(`/jobs?assetPath=${encodeURIComponent(assetPath)}`)
       .then((data) => {
         setJobs(data.jobs);
         onJobsObserved(assetPath, data.jobs);
       }).catch(() => undefined); }, 3_500);
     return () => window.clearInterval(timer);
-  }, [assetPath, onJobsObserved, request]);
+  }, [assetPath, hasActiveJobs, onJobsObserved, request]);
 
   const payload = () => ({
     assetType: asset.type,
@@ -1652,13 +1661,26 @@ function GenerationModal({
       fps,
       durationSeconds,
       useReferenceImages: Boolean(activePreset?.referenceImagesEnabled),
+      ...(isFrameImageToImage && referenceImagePath ? { referenceImagePath } : {}),
     },
   });
+
+  useEffect(() => {
+    if (!frameGeneration || !activePreset) return;
+    setWidth(String(activePreset.defaults?.width ?? 1024));
+    setHeight(String(activePreset.defaults?.height ?? 1024));
+    setSeed(activePreset.defaults?.seed === undefined ? "" : String(activePreset.defaults.seed));
+    setDenoise(String(activePreset.defaults?.denoise ?? 0.65));
+    setFrames(String(activePreset.defaults?.frames ?? 121));
+    setFps(String(activePreset.defaults?.fps ?? 24));
+    setDurationSeconds(String(activePreset.defaults?.durationSeconds ?? 5));
+  }, [activePreset?.id, frameGeneration]);
 
   useEffect(() => {
     setPromptDraft(null);
     setNegativePromptDraft(null);
     setPromptLoading(false);
+    promptEditedRef.current = false;
     if (!promptInitializationKey) promptInitializationKeyRef.current = null;
   }, [promptInitializationKey]);
 
@@ -1672,12 +1694,12 @@ function GenerationModal({
     // editable values with the exact prompt the server derives from Markdown.
     void request<{ preview: ComfyPreview }>("/jobs/preview", { body: JSON.stringify(promptHydrationBody), method: "POST" })
       .then(({ preview: nextPreview }) => {
-        if (cancelled) return;
+        if (cancelled || promptEditedRef.current) return;
         setPromptDraft(typeof nextPreview.prompt === "string" ? nextPreview.prompt : "");
         setNegativePromptDraft(typeof nextPreview.negativePrompt === "string" ? nextPreview.negativePrompt : "");
       })
       .catch(() => {
-        if (cancelled) return;
+        if (cancelled || promptEditedRef.current) return;
         // Keep the fields usable if an older server does not yet expose prompt
         // values in previews, or if this read-only request cannot complete.
         setPromptDraft("");
@@ -1702,6 +1724,7 @@ function GenerationModal({
 
   const choosePreset = (nextId: string) => {
     const next = availablePresets.find((preset) => preset.id === nextId);
+    presetIdRef.current = nextId;
     setPresetId(nextId);
     setPreview(null);
     if (!next) return;
@@ -1714,18 +1737,9 @@ function GenerationModal({
     setDurationSeconds(String(next.defaults?.durationSeconds ?? 5));
   };
 
-  const inspectInputs = async () => {
-    if (!assetPath || !activePreset) return;
-    setSubmitting(true);
-    setError(null);
-    try {
-      const data = await request<{ preview: ComfyPreview }>("/jobs/preview", { body: JSON.stringify(payload()), method: "POST" });
-      setPreview(data.preview);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "无法检查生成输入");
-    } finally {
-      setSubmitting(false);
-    }
+  const chooseFrameMode = (nextMode: FrameGenerationMode) => {
+    setFrameMode(nextMode);
+    setPreview(null);
   };
 
   const queueJob = async () => {
@@ -1749,91 +1763,108 @@ function GenerationModal({
     }
   };
 
-  const actOnJob = async (job: ComfyJob, action: "retry" | "cancel") => {
+  const cancelJob = async (job: ComfyJob) => {
     setActingJobId(job.id);
     setError(null);
     try {
-      const data = await request<{ job: ComfyJob }>(`/jobs/${encodeURIComponent(job.id)}/${action}`, { body: "{}", method: "POST" });
-      setJobs((current) => action === "retry"
-        ? [data.job, ...current.filter((item) => item.id !== job.id)]
-        : current.map((item) => item.id === data.job.id ? data.job : item));
-      if (action === "retry") onQueued(assetPath, data.job);
-      else onJobsObserved(assetPath, [data.job]);
+      const data = await request<{ job: ComfyJob }>(`/jobs/${encodeURIComponent(job.id)}/cancel`, { body: "{}", method: "POST" });
+      setJobs((current) => current.map((item) => item.id === data.job.id ? data.job : item));
+      onJobsObserved(assetPath, [data.job]);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : action === "retry" ? "无法重新排队任务" : "无法取消排队任务");
+      setError(reason instanceof Error ? reason.message : "无法取消排队任务");
     } finally {
       setActingJobId(null);
     }
   };
 
   if (!assetPath) {
-    return <div className="modal-backdrop"><section aria-modal="true" className="modal-card generation-modal" role="dialog"><div className="modal-heading"><div><p className="eyebrow">ComfyUI 生成</p><h2>先建立镜头资产</h2></div><button aria-label="关闭" className="icon-button" onClick={onClose} type="button">×</button></div><p className="modal-copy">剧本草稿还没有对应的真实镜头目录。先建立镜头资产，工作台才能安全地归档首帧、尾帧和视频候选。</p><div className="modal-actions"><button className="text-button" onClick={onClose} type="button">知道了</button></div></section></div>;
+    return <div className="modal-backdrop"><section aria-modal="true" className="modal-card generation-modal" role="dialog"><div className="modal-heading"><div><h2>先建立镜头资产</h2></div><button aria-label="关闭" className="icon-button" onClick={onClose} type="button">×</button></div><div className="modal-actions"><button className="text-button" onClick={onClose} type="button">知道了</button></div></section></div>;
   }
 
   const profileReady = Boolean(activeProfile?.enabled && activeProfile?.configured);
-  const canSubmit = Boolean(activePreset && profileReady);
+  const canSubmit = Boolean(activePreset && profileReady && (!isFrameImageToImage || referenceImagePath));
   const supportsInput = (key: string) => Boolean(activePreset?.inputs?.some((input) => input.key === key));
+  const frameModeAvailable = (mode: FrameGenerationMode) => !frameGeneration || availablePresets.some((preset) => preset.id === framePresetId(frameGeneration.target, mode));
   const hasEditableVideoSpec = ["width", "height", "durationSeconds", "frames", "fps"].some(supportsInput);
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section aria-labelledby="generation-modal-title" aria-modal="true" className="modal-card generation-modal" role="dialog">
       <header className="modal-heading generation-modal-heading">
-        <div><p className="eyebrow">ComfyUI 生成</p><h2 id="generation-modal-title">{displayWorkspaceAssetTitle(asset)}</h2></div>
+        <div><h2 id="generation-modal-title">{displayWorkspaceAssetTitle(asset)}</h2></div>
         <button aria-label="关闭" className="icon-button" onClick={onClose} type="button">×</button>
       </header>
       <div className="generation-modal-body">
-          <div className="generation-asset-strip">
-          <div className="generation-asset-strip-copy"><span>当前资产</span><strong>{displayWorkspaceAssetTitle(asset)}</strong><small>{isVideo ? "读取已保存设定，并使用已选首帧和尾帧" : activePreset?.referenceImagesEnabled ? "图生图：可临时改提示词，上传检查页列出的已选输入图" : "纯文生图：可临时改提示词，不上传参考图"}</small></div>
-          <span className="generation-output-kind">{isVideo ? "视频候选" : "图片候选"}</span>
-        </div>
         {loading ? <p className="generation-loading">正在读取服务器配置与工作流预设…</p> : <>
-          <div className="generation-layout">
-            <div className="generation-main-column">
-              <section className="generation-section">
-                <div className="generation-section-heading"><div><strong>任务设置</strong><span>选择生成服务器和受控工作流</span></div></div>
-                <div className="generation-form-grid">
-                  <SelectField ariaLabel="选择 ComfyUI 服务器" label="生成服务器" onChange={(value) => void chooseProfile(value)} options={profiles.map((profile) => ({ label: `${profile.name}${profile.configured && profile.enabled ? "" : " · 未配置"}`, value: profile.id }))} value={activeProfileId} />
-                  {initialPresetId ? <div className="generation-fixed-preset"><span>工作流</span><strong>{activePreset?.label || (loading ? "正在读取…" : "工作流不可用")}</strong></div> : <SelectField ariaLabel="选择 ComfyUI 工作流" label="工作流" disabled={!availablePresets.length} onChange={choosePreset} options={availablePresets.map((preset) => ({ label: preset.label, value: preset.id }))} value={activePreset?.id || ""} />}
-                </div>
-              </section>
-              {!isVideo && activePreset ? <section className="generation-section">
-                <div className="generation-section-heading"><div><strong>提示词</strong><span>仅本次生成</span></div></div>
-                <div className="generation-prompt-fields">
-                  <TextField disabled={promptDraft === null} label="提示词" multiline onChange={(value) => { setPromptDraft(value); setPreview(null); }} placeholder={promptLoading ? "正在读取…" : "输入提示词"} value={promptDraft ?? ""} />
-                  <TextField disabled={negativePromptDraft === null} label="负面提示词" multiline onChange={(value) => { setNegativePromptDraft(value); setPreview(null); }} placeholder={promptLoading ? "正在读取…" : "输入负面提示词"} value={negativePromptDraft ?? ""} />
-                </div>
-              </section> : null}
-              <section className="generation-section generation-output-settings">
-                <div className="generation-section-heading"><div><strong>输出规格</strong><span>{isVideo ? "只显示当前云端工作流允许覆盖的参数" : "设置候选图的画幅"}</span></div></div>
-                {!isVideo || hasEditableVideoSpec ? <div className={`generation-parameter-grid ${isVideo ? "is-video" : ""}`}>
-                  {supportsInput("width") ? <TextField label="宽度" onChange={setWidth} value={width} /> : null}
-                  {supportsInput("height") ? <TextField label="高度" onChange={setHeight} value={height} /> : null}
-                  {supportsInput("denoise") ? <TextField label="重绘强度（0-1）" onChange={setDenoise} value={denoise} /> : null}
-                  {supportsInput("durationSeconds") ? <TextField label="时长（秒）" onChange={setDurationSeconds} value={durationSeconds} /> : null}
-                  {supportsInput("frames") ? <TextField label="帧数" onChange={setFrames} value={frames} /> : null}
-                  {supportsInput("fps") ? <TextField label="帧率" onChange={setFps} value={fps} /> : null}
-                </div> : null}
-                <details className="generation-advanced"><summary><span>高级参数</span><small>Seed 留空则随机</small></summary><TextField label="Seed" onChange={setSeed} value={seed} /></details>
-                {isVideo && activePreset?.id === "h3-first-last-video-v1" ? <div className="generation-mode-note"><strong>首尾帧模式</strong><span>上传已选首帧和尾帧；分辨率与 24 fps 沿用你的原始工作流，时长会由工作流自动对齐到 H3 所需帧数。</span></div> : null}
-                {!isVideo && activePreset?.referenceImagesEnabled ? <div className="generation-mode-note"><strong>当前模式：图生图</strong><span>{activePreset.id === "shot-last-frame-img2img-v1" ? "固定读取当前镜头已选首帧，生成尾帧候选。" : "当前工作流只接收一张图：优先使用镜头参考图，其次场景图、人物图或道具图；其他参考不会上传。"}</span></div> : null}
-                {!isVideo && !activePreset?.referenceImagesEnabled ? <div className="generation-mode-note"><strong>当前模式：纯文生图</strong><span>已选三视图、定妆和参考图不会自动上传。需要图生图时，请先配置独立的图生图工作流。</span></div> : null}
-              </section>
+          <section className="generation-section generation-task-settings">
+            <div className="generation-form-grid">
+              <SelectField ariaLabel="选择 ComfyUI 服务器" label="服务器" onChange={(value) => void chooseProfile(value)} options={profiles.map((profile) => ({ label: `${profile.name}${profile.configured && profile.enabled ? "" : " · 未配置"}`, value: profile.id }))} value={activeProfileId} />
+              {lockedPresetId ? <div className="generation-fixed-preset"><span>工作流</span><strong>{activePreset?.label || (loading ? "正在读取…" : "不可用")}</strong></div> : <SelectField ariaLabel="选择 ComfyUI 工作流" label="工作流" disabled={!availablePresets.length} onChange={choosePreset} options={availablePresets.map((preset) => ({ label: preset.label, value: preset.id }))} value={activePreset?.id || ""} />}
             </div>
-            <aside className="generation-side-column">
-              <section className={`generation-status-card ${profileReady ? "is-ready" : ""}`}>
-                <span className="generation-card-kicker">服务器状态</span>
-                <strong>{profileReady ? "可以提交" : "尚未配置"}</strong>
-                <p>{profileReady ? `将通过 ${activeProfile?.name || "当前服务器"} 提交任务。` : "填写 Bridge 地址和令牌后，即可在这里直接生成。"}</p>
-                {!profileReady && configPath ? <details className="generation-config-path"><summary>查看本机配置文件</summary><code>{configPath}</code></details> : null}
-              </section>
-              {activePreset ? <section className="generation-preset-card"><span className="generation-card-kicker">受控工作流</span><strong>{activePreset.label}</strong><p>{activePreset.description}</p><div><span>自动归档</span><b>{activePreset.outputSlotLabel}</b></div></section> : <section className="generation-status-card"><span className="generation-card-kicker">受控工作流</span><strong>没有可用工作流</strong><p>当前资产没有匹配的生成预设。</p></section>}
-            </aside>
-          </div>
-          {preview ? <section className={`generation-preview ${preview.errors?.length ? "has-error" : ""}`}><div className="generation-result-heading"><strong>{preview.summary || "输入检查"}</strong><span>{preview.errors?.length ? "需要处理" : "可以生成"}</span></div>{preview.attachments?.length ? <ul>{preview.attachments.map((item) => <li key={`${item.role}-${item.name}`}><span>{item.role}</span><b>{item.name}</b></li>)}</ul> : null}{preview.warnings?.map((warning) => <p key={warning}>{warning}</p>)}{preview.errors?.map((item) => <p className="generation-preview-error" key={item}>{item}</p>)}</section> : null}
+            {!profileReady ? <p className="generation-inline-error">服务器未配置</p> : null}
+          </section>
+          {frameGeneration ? <section className="generation-section frame-generation-section">
+            <div aria-label={`${frameGeneration.target === "firstFrame" ? "首帧" : "尾帧"}生成方式`} className="frame-generation-mode-toggle" role="group">
+              <button aria-pressed={frameMode === "textToImage"} disabled={!frameModeAvailable("textToImage")} onClick={() => chooseFrameMode("textToImage")} type="button">文生图</button>
+              <button aria-pressed={frameMode === "imageToImage"} disabled={!frameModeAvailable("imageToImage")} onClick={() => chooseFrameMode("imageToImage")} type="button">图生图</button>
+            </div>
+            {isFrameImageToImage ? <div className="frame-reference-picker">
+              <div className="frame-reference-picker-heading"><strong>输入图</strong></div>
+              {frameGeneration.candidates.length ? <div className="frame-reference-grid">
+                {frameGeneration.candidates.map((candidate) => {
+                  const selected = referenceImagePath === candidate.file.path;
+                  return <button
+                    aria-pressed={selected}
+                    className={`frame-reference-option ${selected ? "is-selected" : ""}`}
+                    key={candidate.key}
+                    onClick={() => { setReferenceImagePath(candidate.file.path); setPreview(null); }}
+                    type="button"
+                  >
+                    <img alt={`${candidate.detail}${candidate.label}`} decoding="async" loading="lazy" src={mediaUrl(candidate.file)} />
+                    <span><strong title={candidate.label}>{candidate.label}</strong><small>{candidate.detail}</small></span>
+                  </button>;
+                })}
+              </div> : <p className="frame-reference-empty">没有可用输入图</p>}
+            </div> : null}
+          </section> : null}
+          {!isVideo && activePreset ? <section className="generation-section generation-prompt-section">
+            <TextField label="提示词" multiline onChange={(value) => { promptEditedRef.current = true; setPromptDraft(value); setPreview(null); }} placeholder={promptLoading ? "正在读取，可直接输入" : "输入提示词"} value={promptDraft ?? ""} />
+            <details className="generation-secondary-prompt"><summary>负面提示词</summary><TextField label="负面提示词" multiline onChange={(value) => { promptEditedRef.current = true; setNegativePromptDraft(value); setPreview(null); }} placeholder={promptLoading ? "正在读取，可直接输入" : "输入负面提示词"} value={negativePromptDraft ?? ""} /></details>
+          </section> : null}
+          <details className="generation-section generation-options">
+            <summary className="generation-section-heading"><strong>{isVideo ? "视频参数" : "图片参数"}</strong></summary>
+            {!isVideo || hasEditableVideoSpec ? <div className={`generation-parameter-grid ${isVideo ? "is-video" : ""}`}>
+              {supportsInput("width") ? <TextField label="宽度" onChange={setWidth} value={width} /> : null}
+              {supportsInput("height") ? <TextField label="高度" onChange={setHeight} value={height} /> : null}
+              {supportsInput("denoise") ? <TextField label="重绘强度" onChange={setDenoise} value={denoise} /> : null}
+              {supportsInput("durationSeconds") ? <TextField label="时长（秒）" onChange={setDurationSeconds} value={durationSeconds} /> : null}
+              {supportsInput("frames") ? <TextField label="帧数" onChange={setFrames} value={frames} /> : null}
+              {supportsInput("fps") ? <TextField label="帧率" onChange={setFps} value={fps} /> : null}
+            </div> : null}
+            <TextField label="Seed" onChange={setSeed} value={seed} />
+          </details>
+          {preview?.errors?.length ? <section className="generation-preview has-error"><div className="generation-result-heading"><strong>无法生成</strong></div>{preview.errors.map((item) => <p className="generation-preview-error" key={item}>{item}</p>)}</section> : null}
           {error ? <p className="generation-preview-error" role="alert">{error}</p> : null}
-          {jobs.length ? <section className="generation-job-list"><div><p className="eyebrow">当前资产任务</p><strong>{jobs.length} 个</strong></div>{jobs.slice(0, 4).map((job) => <article key={job.id}><span className={`generation-job-dot is-${job.status}`} /><div><strong>{job.presetLabel || "ComfyUI 任务"}</strong><small>{formatComfyJobStatus(job)}{formatComfyJobDetail(job)}</small></div>{job.outputPaths?.length ? <em>已归档</em> : null}{job.status === "queued" ? <button className="text-button generation-job-action" disabled={actingJobId === job.id} onClick={() => void actOnJob(job, "cancel")} type="button">取消排队</button> : null}{["failed", "cancelled"].includes(job.status) ? <button className="text-button generation-job-action" disabled={actingJobId === job.id} onClick={() => void actOnJob(job, "retry")} type="button">{actingJobId === job.id ? "处理中…" : "重试"}</button> : null}</article>)}</section> : null}
+          {jobs.length ? <section className="generation-job-list"><div><strong>生成记录</strong></div>{jobs.slice(0, 4).map((job) => {
+            const prompt = job.prompt?.trim();
+            const negativePrompt = job.negativePrompt?.trim();
+            return <article key={job.id}>
+              <span className={`generation-job-dot is-${job.status}`} />
+              <div>
+                <strong>{job.presetLabel || "ComfyUI 任务"}</strong>
+                <small>{formatComfyJobStatus(job)}{formatComfyJobDetail(job)}</small>
+                {prompt ? <details className="generation-job-prompt">
+                  <summary>提示词</summary>
+                  <div className="generation-job-prompt-copy">
+                    <p>{prompt}</p>
+                    {negativePrompt ? <p><span>负面提示词</span>{negativePrompt}</p> : null}
+                  </div>
+                </details> : null}
+              </div>
+              {job.status === "queued" ? <button className="text-button generation-job-action" disabled={actingJobId === job.id} onClick={() => void cancelJob(job)} type="button">取消排队</button> : null}
+            </article>;
+          })}</section> : null}
         </>}
       </div>
-      <footer className="modal-actions generation-modal-actions"><button className="text-button" onClick={onClose} type="button">取消</button><button className="text-button" disabled={loading || submitting || !activePreset} onClick={() => void inspectInputs()} type="button">检查输入</button><button className="submit-button" disabled={loading || submitting || !canSubmit} onClick={() => void queueJob()} type="button">{submitting ? "检查并提交…" : isVideo ? "提交图生视频" : "生成图片"}</button></footer>
+      <footer className="modal-actions generation-modal-actions"><button className="text-button" onClick={onClose} type="button">取消</button><button className="submit-button" disabled={loading || submitting || !canSubmit} onClick={() => void queueJob()} type="button">{submitting ? "生成中…" : isVideo ? "生成视频" : "生成图片"}</button></footer>
     </section>
   </div>;
 }
@@ -1858,10 +1889,9 @@ function TrashModal({
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section aria-labelledby="trash-modal-title" aria-modal="true" className="modal-card asset-modal trash-modal" role="dialog">
       <div className="modal-heading">
-        <div><p className="eyebrow">安全回收站</p><h2 id="trash-modal-title">已移入的资产</h2></div>
+        <div><h2 id="trash-modal-title">已移入的资产</h2></div>
         <button aria-label="关闭回收站" className="icon-button" onClick={onClose} type="button">×</button>
       </div>
-      <p className="modal-copy">恢复时只会回到它原来的项目路径；若原位置已有同名文件，系统不会覆盖。</p>
       <div aria-busy={loading} className="trash-entry-list">
         {loading ? <p className="trash-empty">正在读取回收站…</p> : error ? <div className="trash-empty is-error"><p>{error}</p><button className="text-button" disabled={busy} onClick={onRefresh} type="button">重试</button></div> : entries.length ? entries.map((entry) => <article className={`trash-entry ${entry.recoverable ? "" : "is-legacy"}`} key={entry.id}>
           <span aria-hidden="true" className="trash-entry-mark">↺</span>
@@ -1910,8 +1940,10 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   const [scenePropBindingsDraft, setScenePropBindingsDraft] = useState<ScenePropBinding[]>([]);
   const [designDraft, setDesignDraft] = useState<ShotDesign>(EMPTY_DESIGN);
   const [shotDesignMode, setShotDesignMode] = useState<"preview" | "edit">("preview");
+  const [draftHydratedIdentity, setDraftHydratedIdentity] = useState("");
   const [activeShotWorkflowStep, setActiveShotWorkflowStep] = useState<ShotWorkflowStepId>("design");
   const [generationTarget, setGenerationTarget] = useState<WorkspaceSelectionAsset | null>(null);
+  const [generationFrame, setGenerationFrame] = useState<FrameGenerationRequest | null>(null);
   const [pendingSceneImageLocationPath, setPendingSceneImageLocationPath] = useState<string | null>(null);
   const [generationPresetId, setGenerationPresetId] = useState<string | undefined>();
   const [generationDurationSeconds, setGenerationDurationSeconds] = useState<string | undefined>();
@@ -2280,6 +2312,56 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       ?? character?.confirmedVisuals.costume,
     );
   });
+  const selectedShotReferenceVisuals = useMemo<ShotReferenceVisual[]>(() => {
+    if (selectedAsset?.type !== "shot") return [];
+    const visuals: ShotReferenceVisual[] = [];
+    for (const location of effectiveLocationAssetsForSelectedShot) {
+      const file = selectedVisualFromAsset(location, ["setting", "reference"]);
+      if (file) visuals.push({ key: `location-${location.rootPath}`, label: location.name, detail: "场景", file });
+    }
+    for (const prop of effectivePropAssetsForSelectedShot) {
+      const file = selectedVisualFromAsset(prop, ["reference", "candidate"]);
+      if (file) visuals.push({ key: `prop-${prop.rootPath}`, label: prop.name, detail: "道具", file });
+    }
+    for (const entry of effectiveCastForSelectedShot) {
+      const character = characterByPath.get(entry.characterPath);
+      const look = getLookForPath(character, entry.lookPath);
+      const file = look?.confirmedVisuals.reference
+        ?? look?.confirmedVisuals.turnaround
+        ?? look?.confirmedVisuals.costume
+        ?? character?.confirmedVisuals.reference
+        ?? character?.confirmedVisuals.turnaround
+        ?? character?.confirmedVisuals.costume;
+      if (file) visuals.push({
+        key: `character-${entry.characterPath}`,
+        label: character?.name || displayFileName(entry.characterPath),
+        detail: "人物",
+        file,
+      });
+    }
+    return visuals;
+  }, [characterByPath, effectiveCastForSelectedShot, effectiveLocationAssetsForSelectedShot, effectivePropAssetsForSelectedShot, selectedAsset?.type]);
+  const frameGenerationCandidates = (target: FrameGenerationTarget): ShotReferenceVisual[] => {
+    if (selectedAsset?.type !== "shot") return [];
+    const candidates: ShotReferenceVisual[] = [];
+    const seen = new Set<string>();
+    const add = (label: string, detail: string, file: AssetFile | undefined) => {
+      if (!file || !isImage(file) || seen.has(file.path)) return;
+      seen.add(file.path);
+      candidates.push({ key: `${detail}-${file.path}`, label, detail, file });
+    };
+    if (target === "lastFrame") add("已选首帧", "首帧", selectedShotFirstFrame);
+    add("镜头专属参考图", "镜头", selectedShotReferenceSlot ? selectedSlotVisual(selectedShotReferenceSlot) : undefined);
+    add("镜头候选图", "镜头", selectedShotCandidateSlot ? selectedSlotVisual(selectedShotCandidateSlot) : undefined);
+    add(activeScene?.sceneId || selectedAsset.design.sceneId, "场次", activeScene?.scene
+      ? selectedVisualFromAsset(activeScene.scene, ["setting", "reference", "firstFrame", "lastFrame"])
+      : undefined);
+    for (const location of effectiveLocationAssetsForSelectedShot) {
+      add(location.name, "场景", selectedVisualFromAsset(location, ["setting", "reference", "candidate"]));
+    }
+    for (const visual of selectedShotReferenceVisuals) add(visual.label, visual.detail, visual.file);
+    return candidates;
+  };
   const hasShotReference = hasSelectedShotReference || hasSelectedSceneReference || hasSelectedCharacterReference || hasSelectedPropReference;
   const hasSavedShotBrief = Boolean(
     selectedAsset?.type === "shot"
@@ -2294,7 +2376,10 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   const shotWorkflowNodes = useMemo<ShotWorkflowNode[]>(() => {
     const completed = {
       design: hasSavedShotBrief,
-      reference: hasShotReference,
+      // Reference material is optional. Once the user advances past this
+      // step, show it as completed even when the shot intentionally uses
+      // text-to-image for its first frame.
+      reference: hasShotReference || ["firstFrame", "lastFrame", "video"].includes(activeShotWorkflowStep),
       firstFrame: hasSelectedFirstFrame,
       lastFrame: hasSelectedLastFrame,
       video: hasGeneratedShotVideo,
@@ -2309,11 +2394,10 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   }, [activeShotWorkflowStep, hasGeneratedShotVideo, hasSavedShotBrief, hasSelectedFirstFrame, hasSelectedLastFrame, hasShotReference]);
   const firstIncompleteShotWorkflowStep = useMemo<ShotWorkflowStepId>(() => (
     !hasSavedShotBrief ? "design"
-      : !hasShotReference ? "reference"
-        : !hasSelectedFirstFrame ? "firstFrame"
+      : !hasSelectedFirstFrame ? "firstFrame"
         : !hasSelectedLastFrame ? "lastFrame"
           : "video"
-  ), [hasSavedShotBrief, hasSelectedFirstFrame, hasSelectedLastFrame, hasShotReference]);
+  ), [hasSavedShotBrief, hasSelectedFirstFrame, hasSelectedLastFrame]);
   useEffect(() => {
     const rootPath = selectedAsset?.type === "shot" && !selectedAsset.isDraft
       ? selectedAsset.rootPath || null
@@ -2356,6 +2440,27 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     && JSON.stringify(designDraft) !== JSON.stringify(selectedAsset.design),
   );
 
+  // Draft fields hydrate in effects after a new asset is selected. Ignore the
+  // one render in between so a fast tab click does not trigger a false
+  // "unsaved changes" confirmation.
+  const draftHydrationIdentity = [
+    selectedKey || "",
+    selectedAsset?.type || "",
+    selectedAsset?.type === "character" ? selectedAsset.profileRevision : "",
+    selectedAsset?.type === "location" || selectedAsset?.type === "prop" ? selectedAsset.profileRevision : "",
+    selectedAsset?.type === "scene" ? selectedAsset.sceneRevision : "",
+    selectedAsset?.type === "scene" ? selectedAsset.castRevision : "",
+    selectedAsset?.type === "scene" ? selectedAsset.assetBindingsRevision : "",
+    selectedAsset?.type === "shot" ? selectedAsset.designRevision : "",
+    selectedCharacterLook?.rootPath || "",
+    selectedCharacterLook?.documentRevision || "",
+    snapshot?.projectSettings.revision || "",
+  ].join("\u0000");
+
+  useEffect(() => {
+    setDraftHydratedIdentity(draftHydrationIdentity);
+  }, [draftHydrationIdentity]);
+
   useEffect(() => {
     setActiveSceneId((current) => sceneGroups.some((scene) => scene.sceneId === current)
       ? current
@@ -2364,6 +2469,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
 
   // Keep navigation and browser exits from silently replacing an in-progress edit.
   const isDirty = useMemo(() => {
+    if (draftHydratedIdentity !== draftHydrationIdentity) return false;
     if (!selectedAsset) return hasUnsavedProjectSettingsDraft;
     if (selectedAsset.type === "character") {
       return hasUnsavedProfileDraft || hasUnsavedLookDraft || hasUnsavedProjectSettingsDraft;
@@ -2378,7 +2484,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       return sceneDraft !== (selectedAsset.profileContent || "") || hasUnsavedProjectSettingsDraft;
     }
     return hasUnsavedShotDesign || hasUnsavedProjectSettingsDraft;
-  }, [hasUnsavedLookDraft, hasUnsavedProfileDraft, hasUnsavedProjectSettingsDraft, hasUnsavedSceneAssetBindings, hasUnsavedShotDesign, sceneCastDraft, selectedAsset]);
+  }, [draftHydratedIdentity, draftHydrationIdentity, hasUnsavedLookDraft, hasUnsavedProfileDraft, hasUnsavedProjectSettingsDraft, hasUnsavedSceneAssetBindings, hasUnsavedShotDesign, sceneCastDraft, sceneDraft, selectedAsset]);
 
   useEffect(() => {
     if (!isDirty) return;
@@ -2504,10 +2610,10 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     if (!location) return;
     setPendingSceneImageLocationPath(null);
     setGenerationTarget(location);
+    setGenerationFrame(null);
     setGenerationDurationSeconds(undefined);
     setGenerationPresetId("scene-image-v1");
     setModal("generation");
-    notify("success", "场景资产已准备并关联");
   }, [locationAssets, notify, pendingSceneImageLocationPath]);
 
   const handleGenerationJobsObserved = useCallback((assetPath: string, jobs: ComfyJob[]) => {
@@ -2532,13 +2638,15 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
 
   const handleGenerationQueued = useCallback((assetPath: string, job: ComfyJob) => {
     handleGenerationJobsObserved(assetPath, [job]);
-    notify("success", "ComfyUI 任务已进入队列；完成后会自动显示在候选资料槽");
   }, [handleGenerationJobsObserved, notify]);
 
   // Keep watching queued jobs after the generation dialog closes. Only the
   // project that started the request may update this workspace.
   useEffect(() => {
-    if (!generationWatchPaths.length) return undefined;
+    // The generation dialog polls its own active asset while it is open. The
+    // workspace watcher takes over after the dialog closes so one asset never
+    // creates two identical polling loops.
+    if (!generationWatchPaths.length || modal === "generation") return undefined;
     const requestProjectId = projectIdRef.current;
     const requestEpoch = projectEpochRef.current;
     let disposed = false;
@@ -2571,11 +2679,10 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [generationWatchPaths, handleGenerationJobsObserved, isProjectRequestCurrent, projectUrl]);
+  }, [generationWatchPaths, handleGenerationJobsObserved, isProjectRequestCurrent, modal, projectUrl]);
 
   useEffect(() => {
     if (!pendingGenerationRefreshes || !isDirty || generationRefreshInFlight) return;
-    notify("success", "生成候选已归档；保存当前编辑后会自动刷新资料槽");
   }, [generationRefreshInFlight, isDirty, notify, pendingGenerationRefreshes]);
 
   useEffect(() => {
@@ -2587,10 +2694,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     void loadSnapshot(true, requestProjectId, requestEpoch).then((loaded) => {
       if (!isProjectRequestCurrent(requestProjectId, requestEpoch)) return;
       setPendingGenerationRefreshes((current) => Math.max(0, current - refreshCount));
-      notify(
-        loaded ? "success" : "error",
-        loaded ? "生成候选已归档并显示在资料槽" : "生成候选已归档，但自动刷新失败，请手动刷新",
-      );
+      if (!loaded) notify("error", "生成候选已归档，但自动刷新失败，请手动刷新");
     }).finally(() => {
       if (isProjectRequestCurrent(requestProjectId, requestEpoch)) setGenerationRefreshInFlight(false);
     });
@@ -2638,7 +2742,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     }).then(async () => {
       if (!isProjectRequestCurrent(requestProjectId, requestEpoch)) return;
       await loadSnapshot(true, requestProjectId, requestEpoch);
-      notify("success", "场景图已归档，并设为当前场景参考");
     }).catch((error) => {
       if (!isProjectRequestCurrent(requestProjectId, requestEpoch)) return;
       notify("error", error instanceof Error ? error.message : "场景图已归档，但自动设为当前参考失败");
@@ -2710,7 +2813,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       setProjectId(nextProjectId);
       const loaded = await loadSnapshot(false, nextProjectId, nextEpoch);
       if (!loaded) throw new Error(`${actionLabel}已完成，但无法读取项目资产。请点击“刷新”重试。`);
-      notify("success", action.action === "create" ? `已建立并打开项目“${action.name}”` : "已切换项目");
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : `${actionLabel}失败`;
@@ -2835,7 +2937,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       const data = (await response.json()) as { error?: string; path?: string };
       if (!response.ok) throw new Error(data.error || "恢复资产失败");
       await Promise.all([loadTrashEntries(), loadSnapshot(true)]);
-      notify("success", `已恢复“${entry.name}”`);
     } catch (error) {
       notify("error", error instanceof Error ? error.message : "恢复资产失败");
     } finally {
@@ -2968,7 +3069,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       setActiveTab("characters");
       setSearch("");
       await refreshAndSelect(result.path ? `character:${result.path}` : undefined);
-      notify("success", "人物资产已建立");
     } catch (error) {
       notify("error", error instanceof Error ? error.message : "建立人物失败");
     } finally {
@@ -2987,7 +3087,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       setActiveTab(assetType === "location" ? "locations" : "props");
       setSearch("");
       await refreshAndSelect(result.path ? `${assetType}:${result.path}` : undefined);
-      notify("success", assetType === "location" ? "地点/环境资产已建立" : "道具资产已建立");
     } catch (error) {
       notify("error", error instanceof Error ? error.message : "建立资产失败");
     } finally {
@@ -3008,7 +3107,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       setNewLookName("");
       await loadSnapshot(true);
       if (result.path) setSelectedLookPath(result.path);
-      notify("success", "人物造型已建立，可分别准备三视图、定妆和参考图");
     } catch (error) {
       notify("error", error instanceof Error ? error.message : "建立人物造型失败");
     } finally {
@@ -3028,7 +3126,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       setActiveSceneId(sceneId);
       setSearch("");
       await refreshAndSelect(result.path ? `scene:${result.path}` : undefined);
-      notify("success", "场次资产已建立，可先准备场景图、首尾帧和成片资料");
     } catch (error) {
       notify("error", error instanceof Error ? error.message : "建立场次资产失败");
     } finally {
@@ -3049,7 +3146,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       setActiveSceneId(sceneId);
       setSearch("");
       await refreshAndSelect(result.path ? `shot:${result.path}` : undefined);
-      notify("success", "镜头资产已建立");
     } catch (error) {
       notify("error", error instanceof Error ? error.message : "建立镜头失败");
     } finally {
@@ -3068,7 +3164,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
           content: profileDraft,
           expectedRevision: selectedAsset.profileRevision,
         });
-        notify("success", "角色设定已保存");
       } else if (selectedAsset.type === "location" || selectedAsset.type === "prop") {
         await postAction({
           action: selectedAsset.type === "location" ? "updateLocationDocument" : "updatePropDocument",
@@ -3076,7 +3171,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
           content: sceneDraft,
           expectedRevision: selectedAsset.profileRevision,
         });
-        notify("success", selectedAsset.type === "location" ? "地点/环境设定已保存" : "道具设定已保存");
       } else if (selectedAsset.type === "scene") {
         if (!selectedAsset.scenePath) throw new Error("请先补齐场次资产后再编辑场次说明。");
         await postAction({
@@ -3085,7 +3179,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
           content: sceneDraft,
           expectedRevision: selectedAsset.sceneRevision,
         });
-        notify("success", "场次说明已保存");
       } else {
         if (!selectedAsset.designRevision) throw new Error("请先刷新镜头后再保存。");
         await postAction({
@@ -3094,7 +3187,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
           design: designDraft,
           expectedRevision: selectedAsset.designRevision,
         });
-        notify("success", "镜头设计已保存");
       }
       await loadSnapshot(true);
       setRevisionConflictKey(null);
@@ -3138,7 +3230,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       });
       await loadSnapshot(true);
       setRevisionConflictKey(null);
-      notify("success", "造型设定已保存");
     } catch (error) {
       if (error instanceof AssetApiError && error.code === "REVISION_CONFLICT") {
         setRevisionConflictKey(assetKey(selectedAsset));
@@ -3161,7 +3252,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
         expectedRevision: snapshot.projectSettings.revision,
       });
       await loadSnapshot(true);
-      notify("success", "项目设定已保存");
     } catch (error) {
       if (error instanceof AssetApiError && error.code === "REVISION_CONFLICT") {
         notify("error", "项目设定已在其他位置更新；当前草稿仍保留，请重新读取最新版本后再保存。");
@@ -3185,7 +3275,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       });
       await loadSnapshot(true);
       setRevisionConflictKey(null);
-      notify("success", "本场人物与造型已保存");
     } catch (error) {
       if (error instanceof AssetApiError && error.code === "REVISION_CONFLICT") {
         setRevisionConflictKey(assetKey(selectedAsset));
@@ -3225,7 +3314,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
 
   const addSceneLocationBinding = () => {
     if (!locationAssets.length) {
-      notify("error", "请先在资产库建立地点/环境，再为本场添加引用");
+      notify("error", "请先在资产库建立场景，再为本场添加引用");
       return;
     }
     setSceneLocationBindingsDraft((current) => [...current, {
@@ -3276,7 +3365,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   const handleSaveSceneAssetBindings = async () => {
     if (!selectedAsset || selectedAsset.type !== "scene") return;
     if (sceneLocationBindingsDraft.some((binding) => !binding.locationPath) || scenePropBindingsDraft.some((binding) => !binding.propPath)) {
-      notify("error", "请为每条引用选择地点/环境或道具");
+      notify("error", "请为每条引用选择场景或道具");
       return;
     }
     setBusy(true);
@@ -3292,7 +3381,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       });
       await loadSnapshot(true);
       setRevisionConflictKey(null);
-      notify("success", "本场地点/环境与道具引用已保存");
     } catch (error) {
       if (error instanceof AssetApiError && error.code === "REVISION_CONFLICT") {
         setRevisionConflictKey(assetKey(selectedAsset));
@@ -3351,7 +3439,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     try {
       await loadSnapshot(true);
       setRevisionConflictKey(null);
-      notify("success", "已读取文件的最新版本");
     } catch (error) {
       notify("error", error instanceof Error ? error.message : "重新读取失败");
     } finally {
@@ -3399,7 +3486,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       if (failures.length) {
         notify("error", `${uploaded} 个文件已上传，${failures.length} 个失败。${failures[0]}`);
       } else {
-        notify("success", `${slot.label}资料已加入资产`);
       }
     } catch (error) {
       notify("error", error instanceof Error ? error.message : "上传失败");
@@ -3426,7 +3512,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       });
       await loadSnapshot(true);
       const slotLabel = selectedCharacterVisualSource?.slots.find((candidate) => candidate.key === slot)?.label || "视觉资料";
-      notify("success", `已选为当前${slotLabel}，文件名已标记 -已选`);
     } catch (error) {
       notify("error", error instanceof Error ? error.message : "无法设为当前定稿");
     } finally {
@@ -3450,7 +3535,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       });
       await loadSnapshot(true);
       const selectedLabel = slot.key === "firstFrame" || slot.key === "lastFrame" ? `${slot.label}已选图` : `${slot.label}参考图`;
-      notify("success", `已选为当前${selectedLabel}，文件名已标记 -已选`);
     } catch (error) {
       notify("error", error instanceof Error ? error.message : "无法设为当前参考图");
     } finally {
@@ -3472,7 +3556,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
         fileName: file.name,
         ...(selectedAsset.type === "character" && selectedCharacterLook ? { lookPath: selectedCharacterLook.rootPath } : {}),
       });
-      notify("success", "资料已移入回收站");
       await loadSnapshot(true);
     } catch (error) {
       notify("error", error instanceof Error ? error.message : "移除失败");
@@ -3488,7 +3571,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     try {
       const result = await postAction({ action: "renameAsset", assetType: selectedAsset.type, assetPath: selectedAsset.rootPath, name: renameValue.trim() });
       setModal(null);
-      notify("success", "资产名称已更新");
       await refreshAndSelect(result.path ? `${selectedAsset.type}:${result.path}` : undefined);
     } catch (error) {
       notify("error", error instanceof Error ? error.message : "重命名失败");
@@ -3513,7 +3595,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       await postAction({ action: "trashAsset", assetType: selectedAsset.type, assetPath: selectedAsset.rootPath });
       setModal(null);
       setSelectedKey(null);
-      notify("success", "资产已移入回收站");
       await loadSnapshot(false);
     } catch (error) {
       notify("error", error instanceof Error ? error.message : "移入回收站失败");
@@ -3558,7 +3639,11 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     setModal("scene");
   };
 
-  const openGeneration = async (initialPresetId?: string, skipLeaveDraftCheck = false) => {
+  const openGeneration = async (
+    initialPresetId?: string,
+    skipLeaveDraftCheck = false,
+    frameGeneration?: FrameGenerationRequest,
+  ) => {
     if (!selectedAsset) return;
     if (initialPresetId && selectedAsset.type === "shot" && !selectedAsset.isDraft && hasUnsavedShotDesign && !skipLeaveDraftCheck) {
       const saved = await handleSave();
@@ -3572,14 +3657,24 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     );
     if (selectedAsset.type === "shot" && selectedAsset.isDraft) {
       setGenerationTarget(selectedAsset);
+      setGenerationFrame(frameGeneration ?? null);
       setGenerationPresetId(initialPresetId);
       setModal("generation");
       return;
     }
-    if (!skipLeaveDraftCheck && !confirmLeaveDraft("生成任务只读取当前已保存的 Markdown；纯文生图不上传参考图，图生图和视频工作流会在检查输入后上传明确列出的已选图片。未保存的编辑不会带入本次任务，是否继续？")) return;
+    if (!skipLeaveDraftCheck && !confirmLeaveDraft("生成只读取已保存内容，未保存的编辑不会带入。是否继续？")) return;
     setGenerationTarget(selectedAsset);
+    setGenerationFrame(frameGeneration ?? null);
     setGenerationPresetId(initialPresetId);
     setModal("generation");
+  };
+
+  const openFrameGeneration = async (target: FrameGenerationTarget) => {
+    await openGeneration(
+      target === "firstFrame" ? "shot-first-frame-v1" : "shot-last-frame-img2img-v1",
+      false,
+      { target, candidates: frameGenerationCandidates(target) },
+    );
   };
 
   const handleGenerateSceneImageFromShot = async () => {
@@ -3618,10 +3713,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       return;
     }
     if (activeShotWorkflowStep === "reference") {
-      if (!hasShotReference) {
-        notify("error", "请先选择或生成一张场景、人物或镜头参考图");
-        return;
-      }
       setActiveShotWorkflowStep("firstFrame");
       return;
     }
@@ -3654,7 +3745,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       <header className="topbar">
         <div className="brand-lockup">
           <span className="brand-sigil" aria-hidden="true"><i /><i /><i /></span>
-          <div><p className="brand-name">漫剧工作台</p><p className="brand-subtitle">人物 · 分镜 · 成片</p></div>
+          <div><p className="brand-name">漫剧工作台</p></div>
         </div>
         <ProjectPicker
           currentProjectId={projectId}
@@ -3662,23 +3753,32 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
           disabled={busy}
           onProjectAction={handleProjectAction}
         />
-          <div className="topbar-actions">
-          <button className="refresh-button" disabled={busy || !snapshot} onClick={() => setModal("projectSettings")} type="button"><b>项目设定</b></button>
-          <button className="refresh-button" disabled={busy} onClick={openTrash} type="button"><span aria-hidden="true">↺</span><b>回收站</b></button>
-          <button className="refresh-button" disabled={loading || busy} onClick={refreshWorkspace} type="button"><span aria-hidden="true">↻</span><b>{loading ? "刷新中" : "刷新"}</b></button>
-        </div>
+        <details className="topbar-more">
+          <summary aria-label="打开更多项目操作">更多</summary>
+          <div className="topbar-more-menu">
+            <button disabled={busy || !snapshot} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); setModal("projectSettings"); }} type="button">项目设定</button>
+            <button disabled={busy} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); openTrash(); }} type="button">回收站</button>
+            <button disabled={loading || busy} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); refreshWorkspace(); }} type="button">{loading ? "刷新中" : "刷新"}</button>
+          </div>
+        </details>
       </header>
 
       {notice ? <div aria-live="polite" className={`notice notice-${notice.tone}`} role={notice.tone === "error" ? "alert" : "status"}><span aria-hidden="true">{notice.tone === "success" ? "✓" : "!"}</span>{notice.text}<button aria-label="关闭提示" onClick={() => setNotice(null)} type="button">×</button></div> : null}
 
       <div className="asset-workspace-grid">
         <aside className="asset-library-rail">
-          <div className="asset-rail-heading"><p className="eyebrow">项目导航</p><h1>资产</h1></div>
-          <div className="asset-tabs" role="tablist" aria-label="制作与资产库">
-            <button aria-controls="asset-list-panel" aria-selected={activeTab === "shots"} className={`is-primary-tab ${activeTab === "shots" ? "is-active" : ""}`} id="shots-tab" onClick={() => changeTab("shots")} role="tab" tabIndex={activeTab === "shots" ? 0 : -1} type="button"><span>分镜</span><b>{sceneGroups.length}</b></button>
-            <button aria-controls="asset-list-panel" aria-selected={activeTab === "characters"} className={activeTab === "characters" ? "is-active" : ""} id="characters-tab" onClick={() => changeTab("characters")} role="tab" tabIndex={activeTab === "characters" ? 0 : -1} type="button"><span>人物</span><b>{characterAssets.length}</b></button>
-            <button aria-controls="asset-list-panel" aria-selected={activeTab === "locations"} className={activeTab === "locations" ? "is-active" : ""} id="locations-tab" onClick={() => changeTab("locations")} role="tab" tabIndex={activeTab === "locations" ? 0 : -1} type="button"><span>地点/环境</span><b>{locationAssets.length}</b></button>
-            <button aria-controls="asset-list-panel" aria-selected={activeTab === "props"} className={activeTab === "props" ? "is-active" : ""} id="props-tab" onClick={() => changeTab("props")} role="tab" tabIndex={activeTab === "props" ? 0 : -1} type="button"><span>道具</span><b>{propAssets.length}</b></button>
+          <div className="asset-rail-heading"><h1>资产</h1></div>
+          <div className="asset-tabs" role="tablist" aria-label="分镜与资产库">
+            <div className="asset-nav-group">
+              <span className="asset-nav-group-label">制作</span>
+              <button aria-controls="asset-list-panel" aria-selected={activeTab === "shots"} className={`is-primary-tab ${activeTab === "shots" ? "is-active" : ""}`} id="shots-tab" onClick={() => changeTab("shots")} role="tab" tabIndex={activeTab === "shots" ? 0 : -1} type="button"><span>分镜</span><b>{sceneGroups.length}</b></button>
+            </div>
+            <div className="asset-nav-group">
+              <span className="asset-nav-group-label">资产库</span>
+              <button aria-controls="asset-list-panel" aria-selected={activeTab === "characters"} className={activeTab === "characters" ? "is-active" : ""} id="characters-tab" onClick={() => changeTab("characters")} role="tab" tabIndex={activeTab === "characters" ? 0 : -1} type="button"><span>人物</span><b>{characterAssets.length}</b></button>
+              <button aria-controls="asset-list-panel" aria-selected={activeTab === "locations"} className={activeTab === "locations" ? "is-active" : ""} id="locations-tab" onClick={() => changeTab("locations")} role="tab" tabIndex={activeTab === "locations" ? 0 : -1} type="button"><span>场景</span><b>{locationAssets.length}</b></button>
+              <button aria-controls="asset-list-panel" aria-selected={activeTab === "props"} className={activeTab === "props" ? "is-active" : ""} id="props-tab" onClick={() => changeTab("props")} role="tab" tabIndex={activeTab === "props" ? 0 : -1} type="button"><span>道具</span><b>{propAssets.length}</b></button>
+            </div>
           </div>
           {activeTab === "shots" ? <div className="scene-scope">
             <SelectField
@@ -3692,23 +3792,21 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
               options={sceneGroups.map((scene) => ({ label: `${scene.sceneId} · ${scene.shots.length} 镜头`, value: scene.sceneId }))}
               value={activeScene?.sceneId || ""}
             />
-            {activeScene ? <small>{sceneGroups.length} 场 · 当前 {activeScene.shots.length} 镜头{activeScene.draftCount ? ` · ${activeScene.draftCount} 待导入` : ""}</small> : <small>还没有可用场次</small>}
           </div> : null}
-          <div className="asset-list-tools"><div className="asset-search"><span aria-hidden="true">⌕</span><input aria-label={activeTab === "characters" ? "搜索人物" : activeTab === "locations" ? "搜索地点/环境" : activeTab === "props" ? "搜索道具" : "搜索当前场次镜头"} onChange={(event) => changeSearch(event.target.value)} placeholder={activeTab === "characters" ? "搜索人物" : activeTab === "locations" ? "搜索地点/环境" : activeTab === "props" ? "搜索道具" : "搜索当前场次镜头"} value={search} />{search ? <button aria-label="清空搜索" className="asset-search-clear" onClick={() => changeSearch("")} type="button">×</button> : null}</div>{activeTab === "characters" || activeTab === "locations" || activeTab === "props" ? <button aria-label="新建资产" className="add-asset-button" onClick={openCreate} type="button"><span aria-hidden="true">＋</span><b>新建</b></button> : <div className="scene-create-actions"><button aria-label="新建场次" className="add-asset-button is-secondary" onClick={openCreateScene} type="button"><span aria-hidden="true">＋</span><b>场次</b></button><button aria-label="新建镜头" className="add-asset-button" onClick={openCreate} type="button"><span aria-hidden="true">＋</span><b>镜头</b></button></div>}</div>
+          <div className="asset-list-tools"><div className="asset-search"><span aria-hidden="true">⌕</span><input aria-label={activeTab === "characters" ? "搜索人物" : activeTab === "locations" ? "搜索场景" : activeTab === "props" ? "搜索道具" : "搜索当前场次镜头"} onChange={(event) => changeSearch(event.target.value)} placeholder={activeTab === "characters" ? "搜索人物" : activeTab === "locations" ? "搜索场景" : activeTab === "props" ? "搜索道具" : "搜索当前场次镜头"} value={search} />{search ? <button aria-label="清空搜索" className="asset-search-clear" onClick={() => changeSearch("")} type="button">×</button> : null}</div>{activeTab === "characters" || activeTab === "locations" || activeTab === "props" ? <button aria-label="新建资产" className="add-asset-button" onClick={openCreate} type="button"><span aria-hidden="true">＋</span><b>新建</b></button> : <div className="scene-create-actions"><button aria-label="新建场次" className="add-asset-button is-secondary" onClick={openCreateScene} type="button"><span aria-hidden="true">＋</span><b>场次</b></button><button aria-label="新建镜头" className="add-asset-button" onClick={openCreate} type="button"><span aria-hidden="true">＋</span><b>镜头</b></button></div>}</div>
           {activeTab === "shots" ? <button className="import-storyboard-button" disabled={busy || !activeDraftGroups.length} onClick={openStoryboardImport} type="button"><span aria-hidden="true">⇣</span>导入当前场次剧本{activeDraftGroups.length ? <b>{activeDraftGroups.reduce((total, group) => total + group.shots.length, 0)}</b> : null}</button> : null}
-          {activeTab === "shots" && activeScene?.scene ? <div className="scene-asset-summary"><SceneAssetCard active={assetKey(activeScene.scene) === selectedKey} onClick={() => selectAsset(assetKey(activeScene.scene!))} scene={activeScene.scene} /></div> : activeTab === "shots" && activeScene ? <button className="scene-asset-create-note" disabled={busy} onClick={() => void handleCreateScene(activeScene.sceneId)} type="button"><span>当前场次还没有独立资料文件夹</span><b>建立场次资产</b></button> : null}
-          <div className="asset-list-heading"><span>{activeTab === "characters" ? "资产库 · 人物" : activeTab === "locations" ? "资产库 · 地点/环境" : activeTab === "props" ? "资产库 · 道具" : activeScene ? "当前场次镜头列表" : "全部分镜"}</span><small>{activeTab === "characters" ? `${characterAssets.length} 个` : activeTab === "locations" ? `${locationAssets.length} 个` : activeTab === "props" ? `${propAssets.length} 个` : `${activeShotAssets.length} 个`}</small></div>
+          {activeTab === "shots" && activeScene?.scene ? <div className="scene-asset-summary"><SceneAssetCard active={assetKey(activeScene.scene) === selectedKey} onClick={() => selectAsset(assetKey(activeScene.scene!))} scene={activeScene.scene} /></div> : activeTab === "shots" && activeScene ? <button className="scene-asset-create-note" disabled={busy} onClick={() => void handleCreateScene(activeScene.sceneId)} type="button"><b>建立场次资产</b></button> : null}
           <div aria-labelledby={`${activeTab}-tab`} className="asset-card-list" id="asset-list-panel" role="tabpanel">
-            {loading ? <div className="asset-list-empty">正在整理资产…</div> : snapshot?.error ? <div className="asset-list-empty error-copy">{snapshot.error}</div> : visibleAssets.length ? visibleAssets.map((asset) => <AssetCard active={assetKey(asset) === selectedKey} asset={asset} key={assetKey(asset)} onClick={() => selectAsset(assetKey(asset))} sceneReferenceCount={asset.type === "location" || asset.type === "prop" ? sceneReferenceCounts.get(asset.rootPath) : undefined} />) : <div className="asset-list-empty"><strong>{search ? "没有匹配资产" : activeTab === "characters" ? "还没有人物" : activeTab === "locations" ? "还没有地点/环境" : activeTab === "props" ? "还没有道具" : "当前场次还没有镜头"}</strong><span>{search ? "换个名称或关键词试试。" : activeTab === "shots" ? "点击“场次”或“镜头”开始分镜生产。" : "点击“新建”建立第一个资产。"}</span></div>}
+            {loading ? <div className="asset-list-empty">正在整理资产…</div> : snapshot?.error ? <div className="asset-list-empty error-copy">{snapshot.error}</div> : visibleAssets.length ? visibleAssets.map((asset) => <AssetCard active={assetKey(asset) === selectedKey} asset={asset} key={assetKey(asset)} onClick={() => selectAsset(assetKey(asset))} sceneReferenceCount={asset.type === "location" || asset.type === "prop" ? sceneReferenceCounts.get(asset.rootPath) : undefined} />) : <div className="asset-list-empty"><strong>{search ? "没有匹配资产" : activeTab === "characters" ? "还没有人物" : activeTab === "locations" ? "还没有场景" : activeTab === "props" ? "还没有道具" : "当前场次还没有镜头"}</strong></div>}
           </div>
         </aside>
 
         <section className="asset-studio-column">
           <div className={`asset-studio-head asset-studio-toolbar ${selectedAsset?.type === "character" ? "is-character-studio" : ""} ${selectedAsset?.type === "scene" ? "is-scene-studio" : ""}`}>
             <div>
-              <p className="asset-breadcrumb">{selectedAsset?.type === "location" ? "资产库 / 地点/环境" : selectedAsset?.type === "prop" ? "资产库 / 道具" : activeTab === "characters" ? selectedAsset?.type === "character" ? `资产库 / 人物 / ${selectedAsset.roleCategory}` : "资产库 / 人物" : activeScene ? `分镜 / ${activeScene.sceneId}` : "分镜 / 资产"}</p>
+              <p className="asset-breadcrumb">{selectedAsset?.type === "location" ? "资产库 / 场景" : selectedAsset?.type === "prop" ? "资产库 / 道具" : activeTab === "characters" ? selectedAsset?.type === "character" ? `资产库 / 人物 / ${selectedAsset.roleCategory}` : "资产库 / 人物" : activeScene ? `分镜 / ${activeScene.sceneId}` : "分镜 / 资产"}</p>
               <div className="asset-title-row">
-                <h2>{selectedAsset ? displayWorkspaceAssetTitle(selectedAsset) : "选择一个资产开始"}</h2>
+                <h2>{selectedAsset ? displayWorkspaceAssetTitle(selectedAsset) : "选择资产"}</h2>
                 {selectedAsset?.type === "character" ? <span
                   aria-label={`人物分类：${selectedAsset.roleCategory}`}
                   className="character-role-badge"
@@ -3718,12 +3816,11 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                   {selectedAsset.roleCategory}
                 </span> : null}
               </div>
-              {activeTab === "shots" && activeScene ? <p className="studio-context">{activeScene.sceneId} · {activeScene.shots.length} 个镜头</p> : null}
             </div>
             {selectedAsset ? <div className="asset-studio-actions">
               {isDirty || selectedAsset.type === "shot" && selectedAsset.isDraft ? <span className={`asset-state-pill ${isDirty ? "is-dirty" : ""}`}>{isDirty ? "未保存" : "待导入"}</span> : null}
               {selectedAsset.type === "shot" && selectedShotIndex >= 0 ? <div className="shot-stepper" aria-label="镜头导航"><span>{String(selectedShotIndex + 1).padStart(2, "0")} / {String(activeShotAssets.length).padStart(2, "0")}</span><button aria-label="上一个镜头" disabled={busy || selectedShotIndex === 0} onClick={() => moveSelectedShot(-1)} type="button">‹</button><button aria-label="下一个镜头" disabled={busy || selectedShotIndex === activeShotAssets.length - 1} onClick={() => moveSelectedShot(1)} type="button">›</button></div> : null}
-              {selectedAsset.type === "character" || selectedAsset.type === "location" ? <button className="studio-action-button generation-open-button" disabled={busy} onClick={() => void openGeneration()} type="button">生成</button> : null}
+              {selectedAsset.type === "character" || selectedAsset.type === "location" || selectedAsset.type === "prop" ? <button className="studio-action-button generation-open-button" disabled={busy} onClick={() => void openGeneration()} type="button">生成</button> : null}
               {selectedAsset.type !== "shot" || !selectedAsset.isDraft ? <>
                 {selectedAsset.type !== "scene" ? <button className="studio-action-button" disabled={busy} onClick={openRename} type="button">重命名</button> : null}
                 <button className="studio-action-button is-danger" disabled={busy} onClick={() => setModal("trash")} type="button">移入回收站</button>
@@ -3737,10 +3834,10 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
             </div>
             <button disabled={busy} onClick={() => void reloadCurrentRevision()} type="button">重新读取最新内容</button>
           </section> : null}
-          {!selectedAsset ? <div className="studio-empty"><span className="studio-empty-symbol">◇</span><h3>从左侧选择创作对象</h3><p>这里会显示角色设定、三视图、镜头设计和对应资料槽。</p></div> : selectedAsset.type === "character" ? (
+          {!selectedAsset ? <div className="studio-empty"><span className="studio-empty-symbol">◇</span><h3>选择一个资产</h3></div> : selectedAsset.type === "character" ? (
             <div className={`character-editor ${selectedCharacterVisualSet.length ? "has-character-visuals" : ""}`}>
               <section className="character-look-switcher" aria-label="人物造型选择">
-                <div><p className="eyebrow">人物造型</p><h3>{selectedCharacterVisualSource?.isIdentity ? "身份基准" : selectedCharacterVisualSource?.label || "选择造型"}</h3><p>身份资料不随服装变化；每套造型独立保存候选三视图、定妆和参考图。</p></div>
+                <div><p className="eyebrow">人物造型</p><h3>{selectedCharacterVisualSource?.isIdentity ? "身份基准" : selectedCharacterVisualSource?.label || "选择造型"}</h3></div>
                 <div className="character-look-switcher-actions">
                   <SelectField
                     ariaLabel="选择人物造型"
@@ -3755,12 +3852,12 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
               </section>
               <div className="character-work-area">
                 <div className="character-copy-column">
-                  {selectedCharacterLook ? <section className="editor-card look-document-editor"><div className="editor-card-heading"><div><p className="eyebrow">当前造型</p><h3>{selectedCharacterLook.id} · {selectedCharacterLook.name}</h3></div><div className="editor-card-heading-actions"><button aria-pressed={lookMode === "edit"} className="editor-mode-button" onClick={() => setLookMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{lookMode === "preview" ? "编辑" : "预览"}</button><button className="save-button" disabled={busy || lookDraft === (selectedCharacterLook.documentContent || "")} onClick={() => void handleSaveLook()} type="button">{busy ? "处理中…" : lookDraft === (selectedCharacterLook.documentContent || "") ? "已保存" : "保存造型"}</button></div></div>{lookMode === "preview" ? <ProfilePreview content={lookDraft} /> : <textarea aria-label={`${selectedCharacterLook.name}造型设定`} className="profile-textarea" onChange={(event) => { setLookDraft(event.target.value); setLookMode("edit"); }} placeholder="补充服装、妆发、固定道具和跨镜头连续性…" value={lookDraft} />}<p className="editor-hint">这一页只描述当前服装与状态；人物分类、脸部和身份仍在“角色设定”中维护。</p></section> : null}
-                  <section className="editor-card profile-editor"><div className="editor-card-heading"><div><p className="eyebrow">身份资料</p><h3>角色设定</h3></div><div className="editor-card-heading-actions"><button aria-pressed={profileMode === "edit"} className="editor-mode-button" onClick={() => setProfileMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{profileMode === "preview" ? "编辑" : "预览"}</button><button className="save-button" disabled={busy || profileDraft === (selectedAsset.profileContent || "")} onClick={() => void handleSave()} type="button">{busy ? "处理中…" : profileDraft === (selectedAsset.profileContent || "") ? "已保存" : "保存设定"}</button></div></div>{profileMode === "preview" ? <ProfilePreview content={profileDraft} /> : <textarea aria-label={`${selectedAsset.name}角色设定`} className="profile-textarea" onChange={(event) => { setProfileDraft(event.target.value); setProfileMode("edit"); }} placeholder="补充人物身份、外形、服装和表演设定…" value={profileDraft} />}<p className="editor-hint">角色分类只从本文件解析；要修改分类，请在 Markdown 中编辑“角色分类”后保存并刷新。</p></section>
+                  {selectedCharacterLook ? <section className="editor-card look-document-editor"><div className="editor-card-heading"><div><p className="eyebrow">当前造型</p><h3>{selectedCharacterLook.id} · {selectedCharacterLook.name}</h3></div><div className="editor-card-heading-actions"><button aria-pressed={lookMode === "edit"} className="editor-mode-button" onClick={() => setLookMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{lookMode === "preview" ? "编辑" : "预览"}</button><button className="save-button" disabled={busy || lookDraft === (selectedCharacterLook.documentContent || "")} onClick={() => void handleSaveLook()} type="button">{busy ? "处理中…" : lookDraft === (selectedCharacterLook.documentContent || "") ? "已保存" : "保存造型"}</button></div></div>{lookMode === "preview" ? <ProfilePreview content={lookDraft} /> : <textarea aria-label={`${selectedCharacterLook.name}造型设定`} className="profile-textarea" onChange={(event) => { setLookDraft(event.target.value); setLookMode("edit"); }} placeholder="输入造型设定" value={lookDraft} />}</section> : null}
+                  <section className="editor-card profile-editor"><div className="editor-card-heading"><div><h3>角色设定</h3></div><div className="editor-card-heading-actions"><button aria-pressed={profileMode === "edit"} className="editor-mode-button" onClick={() => setProfileMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{profileMode === "preview" ? "编辑" : "预览"}</button><button className="save-button" disabled={busy || profileDraft === (selectedAsset.profileContent || "")} onClick={() => void handleSave()} type="button">{busy ? "处理中…" : profileDraft === (selectedAsset.profileContent || "") ? "已保存" : "保存设定"}</button></div></div>{profileMode === "preview" ? <ProfilePreview content={profileDraft} /> : <textarea aria-label={`${selectedAsset.name}角色设定`} className="profile-textarea" onChange={(event) => { setProfileDraft(event.target.value); setProfileMode("edit"); }} placeholder="输入角色设定" value={profileDraft} />}</section>
                 </div>
                 <div className="character-media-column">
                   {selectedCharacterVisualSet.length && selectedCharacterVisualSource ? <CharacterVisualBoard characterName={selectedAsset.name} onPreview={setMediaPreview} sourceLabel={selectedCharacterVisualSource.label} visuals={selectedCharacterVisualSet} /> : null}
-                  <section className="slot-section"><div className="section-heading"><div><p className="eyebrow">视觉资料</p><h3>{selectedCharacterVisualSource?.isIdentity ? "身份基准资料槽" : "当前造型资料槽"}</h3></div><span>仅显示当前资料文件夹中的真实素材 · 每个资料槽可多图选择一张定稿</span></div><div className="slot-grid character-slot-grid">{(selectedCharacterVisualSource?.slots || []).map((slot) => {
+                  <section className="slot-section"><div className="section-heading"><div><h3>{selectedCharacterVisualSource?.isIdentity ? "身份基准资料槽" : "当前造型资料槽"}</h3></div></div><div className="slot-grid character-slot-grid">{(selectedCharacterVisualSource?.slots || []).map((slot) => {
                 const visualSlotKey = isCharacterVisualSlotKey(slot.key) ? slot.key : undefined;
                 const confirmedFile = visualSlotKey
                   ? selectedCharacterVisualSource?.confirmedVisuals?.[visualSlotKey]
@@ -3788,15 +3885,15 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
               {firstMedia(selectedAsset) ? <PrimaryMedia file={firstMedia(selectedAsset)!} label={selectedAsset.name} onPreview={() => setMediaPreview(firstMedia(selectedAsset)!)} /> : null}
               <section className="editor-card scene-document-editor">
                 <div className="editor-card-heading">
-                  <div><p className="eyebrow">{selectedAsset.type === "location" ? "地点/环境资产" : "道具资产"}</p><h3>{selectedAsset.type === "location" ? "地点/环境设定" : "道具设定"}</h3></div>
+                  <div><h3>{selectedAsset.type === "location" ? "场景设定" : "道具设定"}</h3></div>
                   <div className="editor-card-heading-actions">
                     <button aria-pressed={sceneMode === "edit"} className="editor-mode-button" onClick={() => setSceneMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{sceneMode === "preview" ? "编辑" : "预览"}</button>
                     <button className="save-button" disabled={busy || sceneDraft === (selectedAsset.profileContent || "")} onClick={() => void handleSave()} type="button">{busy ? "处理中…" : sceneDraft === (selectedAsset.profileContent || "") ? "已保存" : "保存设定"}</button>
                   </div>
                 </div>
-                {sceneMode === "preview" ? <ProfilePreview content={sceneDraft} /> : <textarea aria-label={`${selectedAsset.name}设定`} className="profile-textarea" onChange={(event) => { setSceneDraft(event.target.value); setSceneMode("edit"); }} placeholder={selectedAsset.type === "location" ? "补充空间关系、光线、时代和连续性要求…" : "补充道具用途、材质、尺寸、磨损和连续性要求…"} value={sceneDraft} />}
+                {sceneMode === "preview" ? <ProfilePreview content={sceneDraft} /> : <textarea aria-label={`${selectedAsset.name}设定`} className="profile-textarea" onChange={(event) => { setSceneDraft(event.target.value); setSceneMode("edit"); }} placeholder="输入设定" value={sceneDraft} />}
               </section>
-              <section className="slot-section"><div className="section-heading"><div><p className="eyebrow">制作资料</p><h3>{selectedAsset.type === "location" ? "地点/环境资料槽" : "道具资料槽"}</h3></div><span>上传真实素材，并在候选图中选择当前参考</span></div><p className="asset-library-managed-note">由分镜场次统一管理引用关系 · 当前资产被 {sceneReferenceCounts.get(selectedAsset.rootPath) || 0} 个场次引用</p><div className="slot-grid scene-slot-grid">{selectedAsset.slots.map((slot) => <SlotPanel confirmedFile={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot) : undefined} confirmedSourcePath={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot)?.path : undefined} disabled={busy} key={slot.key} onPreview={setMediaPreview} onSetConfirmed={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? (file) => void handleSetWorkspaceVisualSelection(slot, file) : undefined} onTrash={(file) => void handleTrashFile(slot, file)} onUpload={(files) => void handleUpload(slot, files)} slot={slot} />)}</div></section>
+              <section className="slot-section"><div className="section-heading"><div><h3>{selectedAsset.type === "location" ? "场景参考图" : "道具参考图"}</h3></div></div><div className="slot-grid scene-slot-grid">{selectedAsset.slots.map((slot) => <SlotPanel confirmedFile={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot) : undefined} confirmedSourcePath={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot)?.path : undefined} disabled={busy} key={slot.key} onPreview={setMediaPreview} onSetConfirmed={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? (file) => void handleSetWorkspaceVisualSelection(slot, file) : undefined} onTrash={(file) => void handleTrashFile(slot, file)} onUpload={(files) => void handleUpload(slot, files)} slot={slot} />)}</div></section>
             </div>
           ) : selectedAsset.type === "scene" ? (
             <div className="scene-editor">
@@ -3804,7 +3901,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
               <section className="editor-card scene-document-editor">
                 <div className="editor-card-heading">
                   <div>
-                    <p className="eyebrow">大分镜资料</p>
                     <h3>场次说明</h3>
                   </div>
                   {selectedAsset.scenePath ? <div className="editor-card-heading-actions">
@@ -3813,21 +3909,20 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                   </div> : null}
                 </div>
                 {!selectedAsset.scenePath ? <div className="scene-setup-empty">
-                  <strong>这个场次还没有独立资料文件夹</strong>
-                  <p>补齐后会创建“场次.md”以及地点/环境图、参考图、首帧、尾帧、候选、定稿和成片资料槽；原始分镜脚本不会被改写。</p>
-                  <button className="save-button primary" disabled={busy} onClick={() => void handleCreateScene(selectedAsset.sceneId)} type="button">{busy ? "建立中…" : "补齐场次资产"}</button>
+                  <button className="save-button primary" disabled={busy} onClick={() => void handleCreateScene(selectedAsset.sceneId)} type="button">{busy ? "建立中…" : "建立场次资产"}</button>
                 </div> : <>
-                  {sceneMode === "preview" ? <ProfilePreview content={sceneDraft} /> : <textarea aria-label={`${selectedAsset.sceneId}场次说明`} className="profile-textarea" onChange={(event) => { setSceneDraft(event.target.value); setSceneMode("edit"); }} placeholder="补充本场的空间关系、统一视觉、连续性和交付要求…" value={sceneDraft} />}
-                  <p className="editor-hint">这里记录整场统一要求；具体镜头的动作和提示词仍在各自的“镜头.md”中。</p>
-                  {!selectedAsset.isComplete ? <button className="scene-complete-button" disabled={busy} onClick={() => void handleCreateScene(selectedAsset.sceneId)} type="button">补齐场次资料（含出场与造型表）</button> : null}
+                  {sceneMode === "preview" ? <ProfilePreview content={sceneDraft} /> : <textarea aria-label={`${selectedAsset.sceneId}场次说明`} className="profile-textarea" onChange={(event) => { setSceneDraft(event.target.value); setSceneMode("edit"); }} placeholder="输入场次说明" value={sceneDraft} />}
+                  {!selectedAsset.isComplete ? <button className="scene-complete-button" disabled={busy} onClick={() => void handleCreateScene(selectedAsset.sceneId)} type="button">补齐场次资料</button> : null}
                 </>}
               </section>
+              <details className="scene-advanced-details">
+                <summary><span>人物与资产</span></summary>
+                <div className="scene-advanced-body">
               {selectedAsset.castPath ? <section className="scene-cast-editor">
                 <div className="section-heading">
-                  <div><p className="eyebrow">出场与造型</p><h3>本场默认人物</h3></div>
+                  <div><h3>人物</h3></div>
                   <div className="scene-cast-actions"><button className="studio-action-button" disabled={busy || !characterAssets.length} onClick={addSceneCastBinding} type="button">添加人物</button><button className="save-button" disabled={busy || JSON.stringify(sceneCastDraft) === JSON.stringify(selectedAsset.castBindings)} onClick={() => void handleSaveSceneCast()} type="button">{busy ? "处理中…" : JSON.stringify(sceneCastDraft) === JSON.stringify(selectedAsset.castBindings) ? "已保存" : "保存绑定"}</button></div>
                 </div>
-                <p className="scene-cast-intro">先给整个场次确定角色和服装；镜头默认继承，只有临时换装、受伤或局部状态才在镜头内覆盖。</p>
                 {sceneCastDraft.length ? <div className="scene-cast-list">{sceneCastDraft.map((binding, index) => {
                   const character = characterByPath.get(binding.characterPath);
                   const lookOptions = [
@@ -3844,35 +3939,33 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                     </div>
                     <div className="scene-cast-row-notes"><TextField label="人物状态" onChange={(state) => updateSceneCastBinding(index, { state })} placeholder="如：衣袍完整、闭眼静止" value={binding.state} /><TextField label="连续性" onChange={(continuity) => updateSceneCastBinding(index, { continuity })} placeholder="如：左肩铁链始终绕向背部" value={binding.continuity} /></div>
                   </article>;
-                })}</div> : <div className="scene-cast-empty"><strong>尚未绑定本场人物</strong><p>先添加角色和默认造型，后续镜头就能直接继承。</p></div>}
+                })}</div> : <div className="scene-cast-empty"><strong>尚未绑定本场人物</strong></div>}
               </section> : null}
               <section className="scene-cast-editor scene-asset-bindings" aria-label="本场引用资产">
                 <div className="section-heading">
-                  <div><p className="eyebrow">分镜生产容器</p><h3>本场引用资产</h3></div>
+                  <div><h3>场景与道具</h3></div>
                   <div className="scene-cast-actions">
-                    <button className="studio-action-button" disabled={busy || !locationAssets.length} onClick={addSceneLocationBinding} type="button">添加地点/环境</button>
+                    <button className="studio-action-button" disabled={busy || !locationAssets.length} onClick={addSceneLocationBinding} type="button">添加场景</button>
                     <button className="studio-action-button" disabled={busy || !propAssets.length} onClick={addScenePropBinding} type="button">添加道具</button>
                     <button className="save-button" disabled={busy || !hasUnsavedSceneAssetBindings} onClick={() => void handleSaveSceneAssetBindings()} type="button">{busy ? "处理中…" : hasUnsavedSceneAssetBindings ? "保存引用" : "已保存"}</button>
                   </div>
                 </div>
-                <p className="scene-cast-intro">地点/环境与道具保留在项目资产库中；本场只记录引用、用途和连续性，镜头在设定的范围内继承。</p>
-                <p className="scene-asset-binding-hint">起止镜号留空表示覆盖全场；填写时必须使用当前场次已有的镜号。</p>
                 <div className="scene-asset-binding-categories">
                   <div className="scene-asset-binding-category">
-                    <div className="scene-asset-binding-category-heading"><strong>地点/环境</strong><small>空间、环境和主视觉基底</small></div>
+                    <div className="scene-asset-binding-category-heading"><strong>场景</strong></div>
                     {selectedSceneAssetBindings.locations.length ? <div className="scene-cast-list">{selectedSceneAssetBindings.locations.map((binding, index) => <article className="scene-cast-row" key={`location-${index}`}>
-                      <div className="scene-cast-row-head"><strong>地点/环境 {String(index + 1).padStart(2, "0")}</strong><button aria-label={`移除第 ${index + 1} 条地点/环境绑定`} className="asset-file-remove" disabled={busy} onClick={() => removeSceneLocationBinding(index)} type="button">×</button></div>
+                      <div className="scene-cast-row-head"><strong>场景 {String(index + 1).padStart(2, "0")}</strong><button aria-label={`移除第 ${index + 1} 条场景绑定`} className="asset-file-remove" disabled={busy} onClick={() => removeSceneLocationBinding(index)} type="button">×</button></div>
                       <div className="scene-cast-row-grid">
-                        <SelectField ariaLabel={`选择第 ${index + 1} 条地点/环境`} label="地点/环境" disabled={busy || !locationAssets.length} onChange={(locationPath) => updateSceneLocationBinding(index, { locationPath })} options={[{ label: "选择地点/环境", value: "" }, ...locationAssets.map((asset) => ({ label: asset.name, value: asset.rootPath }))]} value={binding.locationPath} />
+                        <SelectField ariaLabel={`选择第 ${index + 1} 条场景`} label="场景" disabled={busy || !locationAssets.length} onChange={(locationPath) => updateSceneLocationBinding(index, { locationPath })} options={[{ label: "选择场景", value: "" }, ...locationAssets.map((asset) => ({ label: asset.name, value: asset.rootPath }))]} value={binding.locationPath} />
                         <TextField label="用途 / 角色" onChange={(role) => updateSceneLocationBinding(index, { role })} placeholder="如：主环境、转场地点" value={binding.role} />
                         <TextField label="起始镜号" onChange={(startShotId) => updateSceneLocationBinding(index, { startShotId })} placeholder="留空表示从首镜" value={binding.startShotId} />
                         <TextField label="结束镜号" onChange={(endShotId) => updateSceneLocationBinding(index, { endShotId })} placeholder="留空表示到尾镜" value={binding.endShotId} />
                       </div>
                       <div className="scene-cast-row-notes"><TextField label="状态" onChange={(state) => updateSceneLocationBinding(index, { state })} placeholder="如：雨后、夜景、门扉关闭" value={binding.state} /><TextField label="连续性" onChange={(continuity) => updateSceneLocationBinding(index, { continuity })} placeholder="如：火把始终在画面左侧" value={binding.continuity} /></div>
-                    </article>)}</div> : <div className="scene-cast-empty"><strong>尚未绑定地点/环境</strong><p>从项目资产库选择本场需要的空间或环境，原始地点资料不会被复制。</p></div>}
+                    </article>)}</div> : <div className="scene-cast-empty"><strong>尚未绑定场景</strong></div>}
                   </div>
                   <div className="scene-asset-binding-category">
-                    <div className="scene-asset-binding-category-heading"><strong>道具</strong><small>关键物件、线索和连续性道具</small></div>
+                    <div className="scene-asset-binding-category-heading"><strong>道具</strong></div>
                     {selectedSceneAssetBindings.props.length ? <div className="scene-cast-list">{selectedSceneAssetBindings.props.map((binding, index) => <article className="scene-cast-row" key={`prop-${index}`}>
                       <div className="scene-cast-row-head"><strong>道具 {String(index + 1).padStart(2, "0")}</strong><button aria-label={`移除第 ${index + 1} 条道具绑定`} className="asset-file-remove" disabled={busy} onClick={() => removeScenePropBinding(index)} type="button">×</button></div>
                       <div className="scene-cast-row-grid">
@@ -3882,19 +3975,21 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                         <TextField label="结束镜号" onChange={(endShotId) => updateScenePropBinding(index, { endShotId })} placeholder="留空表示到尾镜" value={binding.endShotId} />
                       </div>
                       <div className="scene-cast-row-notes"><TextField label="状态" onChange={(state) => updateScenePropBinding(index, { state })} placeholder="如：出鞘、沾血、破损" value={binding.state} /><TextField label="连续性" onChange={(continuity) => updateScenePropBinding(index, { continuity })} placeholder="如：始终由右手持有" value={binding.continuity} /></div>
-                    </article>)}</div> : <div className="scene-cast-empty"><strong>尚未绑定道具</strong><p>只在本场需要的道具建立引用，避免为每个分镜重复复制同一主档。</p></div>}
+                    </article>)}</div> : <div className="scene-cast-empty"><strong>尚未绑定道具</strong></div>}
                   </div>
                 </div>
               </section>
-              {selectedSourcePath ? <section className="source-context-card"><div className="source-context-heading"><div><p className="eyebrow">来源上下文</p><h3>{displayFileName(selectedSourcePath)}</h3><small title={selectedSourcePath}>原始分镜脚本</small></div><button className="source-context-toggle" disabled={sourceContext.loading} onClick={() => void toggleSourceContext()} type="button">{sourceContextOpen ? "收起原文" : sourceContext.error && sourceContext.path === selectedSourcePath ? "重新读取" : "查看原文"}</button></div>{sourceContextOpen ? <div className="source-context-body">{sourceContext.path !== selectedSourcePath || sourceContext.loading ? <p>正在读取原始剧本…</p> : sourceContext.error ? <p className="source-context-error">{sourceContext.error}</p> : <pre>{sourceContext.content || "原始剧本为空。"}</pre>}</div> : null}</section> : null}
-              {selectedAsset.scenePath ? <section className="slot-section"><div className="section-heading"><div><p className="eyebrow">整场制作资料</p><h3>场次资料槽</h3></div><span>场景图、统一参考、首尾承接帧与整场成片分别管理</span></div><div className="slot-grid scene-slot-grid">{selectedAsset.slots.map((slot) => <SlotPanel confirmedFile={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot) : undefined} confirmedSourcePath={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot)?.path : undefined} disabled={busy} key={slot.key} onPreview={setMediaPreview} onSetConfirmed={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? (file) => void handleSetWorkspaceVisualSelection(slot, file) : undefined} onTrash={(file) => void handleTrashFile(slot, file)} onUpload={(files) => void handleUpload(slot, files)} slot={slot} />)}</div></section> : null}
+              {selectedSourcePath ? <section className="source-context-card"><div className="source-context-heading"><div><h3>{displayFileName(selectedSourcePath)}</h3></div><button className="source-context-toggle" disabled={sourceContext.loading} onClick={() => void toggleSourceContext()} type="button">{sourceContextOpen ? "收起原文" : sourceContext.error && sourceContext.path === selectedSourcePath ? "重新读取" : "查看原文"}</button></div>{sourceContextOpen ? <div className="source-context-body">{sourceContext.path !== selectedSourcePath || sourceContext.loading ? <p>正在读取原始剧本…</p> : sourceContext.error ? <p className="source-context-error">{sourceContext.error}</p> : <pre>{sourceContext.content || "原始剧本为空。"}</pre>}</div> : null}</section> : null}
+              {selectedAsset.scenePath ? <section className="slot-section"><div className="section-heading"><div><h3>资料</h3></div></div><div className="slot-grid scene-slot-grid">{selectedAsset.slots.map((slot) => <SlotPanel confirmedFile={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot) : undefined} confirmedSourcePath={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? selectedSlotVisual(slot)?.path : undefined} disabled={busy} key={slot.key} onPreview={setMediaPreview} onSetConfirmed={SELECTABLE_VISUAL_SLOTS.has(slot.key) ? (file) => void handleSetWorkspaceVisualSelection(slot, file) : undefined} onTrash={(file) => void handleTrashFile(slot, file)} onUpload={(files) => void handleUpload(slot, files)} slot={slot} />)}</div></section> : null}
+                </div>
+              </details>
             </div>
           ) : (
             <div className={`shot-editor ${selectedAsset.isDraft ? "" : "is-workflow"}`}>
               {selectedAsset.isDraft && selectedShotMedia ? <PrimaryMedia file={selectedShotMedia} label={`${selectedAsset.design.shotId} ${displayShotTitle(selectedAsset)}`} onPreview={() => setMediaPreview(selectedShotMedia)} /> : null}
               {!selectedAsset.isDraft ? <ShotWorkflowStepper activeStep={activeShotWorkflowStep} disabled={busy} nodes={shotWorkflowNodes} onSelect={(step) => void selectShotWorkflowStep(step)} /> : null}
               <div className="workflow-step-panel">
-              {selectedAsset.isDraft || activeShotWorkflowStep === "design" ? <section className="editor-card shot-design-editor"><div className="editor-card-heading"><div><p className="eyebrow">镜头设计</p><h3>{selectedAsset.isDraft ? "分镜草稿 · 尚未建立资产" : "镜头描述"}</h3></div>{selectedAsset.isDraft ? <button className="save-button primary" disabled={busy || !selectedAsset.sourcePath} onClick={handleCreateSelectedDraft} type="button">{busy ? "建立中…" : "建立镜头资产"}</button> : <div className="editor-card-heading-actions"><button aria-pressed={shotDesignMode === "edit"} className="editor-mode-button" onClick={() => setShotDesignMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{shotDesignMode === "preview" ? "修改" : "预览"}</button>{shotDesignMode === "edit" ? <button className="save-button" disabled={busy || !hasUnsavedShotDesign} onClick={() => void handleSave()} type="button">{busy ? "处理中…" : hasUnsavedShotDesign ? "保存" : "已保存"}</button> : null}</div>}</div>
+              {selectedAsset.isDraft || activeShotWorkflowStep === "design" ? <section className="editor-card shot-design-editor"><div className="editor-card-heading"><div><h3>{selectedAsset.isDraft ? "分镜草稿" : "镜头描述"}</h3></div>{selectedAsset.isDraft ? <button className="save-button primary" disabled={busy || !selectedAsset.sourcePath} onClick={handleCreateSelectedDraft} type="button">{busy ? "建立中…" : "建立镜头资产"}</button> : <div className="editor-card-heading-actions"><button aria-pressed={shotDesignMode === "edit"} className="editor-mode-button" onClick={() => setShotDesignMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{shotDesignMode === "preview" ? "修改" : "预览"}</button>{shotDesignMode === "edit" ? <button className="save-button" disabled={busy || !hasUnsavedShotDesign} onClick={() => void handleSave()} type="button">{busy ? "处理中…" : hasUnsavedShotDesign ? "保存" : "已保存"}</button> : null}</div>}</div>
                 {selectedAsset.isDraft ? <DraftSummary design={designDraft} /> : shotDesignMode === "preview" ? <ShotDesignPreview design={designDraft} /> : <>
                   <div className="design-grid">
                     <TextField label="时码" onChange={(value) => setDesignDraft((draft) => ({ ...draft, timecode: value }))} value={designDraft.timecode} />
@@ -3905,20 +4000,35 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                     <TextField label="画面描述" multiline onChange={(value) => setDesignDraft((draft) => ({ ...draft, content: value }))} value={designDraft.content} />
                     <TextField label="台词" multiline onChange={(value) => setDesignDraft((draft) => ({ ...draft, dialogue: value }))} value={designDraft.dialogue} />
                     <TextField label="运镜" onChange={(value) => setDesignDraft((draft) => ({ ...draft, camera: value }))} value={designDraft.camera} />
-                    <TextField label="人物备注（兼容旧剧本）" onChange={(value) => setDesignDraft((draft) => ({ ...draft, references: value }))} placeholder="补充不能结构化的角色提示" value={designDraft.references} />
+                    <TextField label="人物备注" onChange={(value) => setDesignDraft((draft) => ({ ...draft, references: value }))} placeholder="输入备注" value={designDraft.references} />
                   </div>
-                  <section className="shot-character-plan">
-                    <div className="section-heading"><div><p className="eyebrow">人物与造型</p><h3>本镜头引用</h3></div><button className="studio-action-button" disabled={busy || !characterAssets.length} onClick={addShotCharacterOverride} type="button">添加覆盖</button></div>
-                    <p className="shot-character-plan-intro">默认继承本场的人物和造型；这里仅记录某个镜头的换装或局部状态例外。</p>
+                  <section className="shot-prompt-fields" aria-label="生成提示词">
+                    <div className="section-heading"><div><h3>提示词</h3></div></div>
+                    <TextField label="提示词" multiline onChange={(value) => setDesignDraft((draft) => ({ ...draft, prompt: value }))} placeholder="输入提示词" value={designDraft.prompt} />
+                    <TextField label="负面提示词" multiline onChange={(value) => setDesignDraft((draft) => ({ ...draft, negativePrompt: value }))} value={designDraft.negativePrompt} />
+                    <details className="shot-frame-prompt-fields">
+                      <summary>首尾帧提示词</summary>
+                      <div>
+                        <TextField label="首帧提示词" multiline onChange={(value) => setDesignDraft((draft) => ({ ...draft, firstFramePrompt: value }))} value={designDraft.firstFramePrompt} />
+                        <TextField label="首帧负面提示词" multiline onChange={(value) => setDesignDraft((draft) => ({ ...draft, firstFrameNegativePrompt: value }))} value={designDraft.firstFrameNegativePrompt} />
+                        <TextField label="尾帧提示词" multiline onChange={(value) => setDesignDraft((draft) => ({ ...draft, lastFramePrompt: value }))} value={designDraft.lastFramePrompt} />
+                        <TextField label="尾帧负面提示词" multiline onChange={(value) => setDesignDraft((draft) => ({ ...draft, lastFrameNegativePrompt: value }))} value={designDraft.lastFrameNegativePrompt} />
+                      </div>
+                    </details>
+                  </section>
+                  <details className="shot-character-plan">
+                    <summary className="shot-character-plan-summary"><span>人物与造型</span>{effectiveCastForSelectedShot.length ? <small>{effectiveCastForSelectedShot.length} 人</small> : null}</summary>
+                    <div className="shot-character-plan-body">
+                    <div className="section-heading"><div><h3>人物与造型</h3></div><button className="studio-action-button" disabled={busy || !characterAssets.length} onClick={addShotCharacterOverride} type="button">添加覆盖</button></div>
                     {inheritedSceneCastForSelectedShot.length ? <div className="shot-inherited-cast" aria-label="继承的场次人物与造型">{inheritedSceneCastForSelectedShot.map((binding) => {
                       const character = characterByPath.get(binding.characterPath);
                       const look = getLookForPath(character, binding.lookPath);
                       const preview = look?.confirmedVisuals.turnaround ?? look?.confirmedVisuals.costume ?? character?.confirmedVisuals.turnaround;
                       return <article className="shot-inherited-cast-card" key={`${binding.characterPath}-${binding.startShotId}-${binding.endShotId}`}>
-                        {preview && isImage(preview) ? <button aria-label={`查看${character?.name || "人物"}当前造型`} className="shot-inherited-cast-image" onClick={() => setMediaPreview(preview)} type="button"><img alt={`${character?.name || "人物"}造型参考`} src={mediaUrl(preview)} /></button> : <span className="shot-inherited-cast-mark">人</span>}
+                        {preview && isImage(preview) ? <button aria-label={`查看${character?.name || "人物"}当前造型`} className="shot-inherited-cast-image" onClick={() => setMediaPreview(preview)} type="button"><img alt={`${character?.name || "人物"}造型参考`} decoding="async" loading="lazy" src={mediaUrl(preview)} /></button> : <span className="shot-inherited-cast-mark">人</span>}
                         <div><strong>{character?.name || displayFileName(binding.characterPath)}</strong><small>{displayLookLabel(character, binding.lookPath)} · {formatBindingRange(binding)}</small>{binding.state ? <em>{binding.state}</em> : null}</div>
                       </article>;
-                    })}</div> : <div className="shot-inherited-empty">本场尚未设置默认人物与造型。可先回到场次资料完成绑定，或在这里添加一次性覆盖。</div>}
+                    })}</div> : <div className="shot-inherited-empty">本场未设置人物与造型。</div>}
                     {(designDraft.characterOverrides ?? []).length ? <div className="shot-character-override-list">{(designDraft.characterOverrides ?? []).map((override, index) => {
                       const character = characterByPath.get(override.characterPath);
                       const hasInheritedBinding = inheritedSceneCastForSelectedShot.some((binding) => binding.characterPath === override.characterPath);
@@ -3938,7 +4048,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                       </article>;
                     })}</div> : null}
                     {effectiveCastForSelectedShot.length ? <div className="shot-effective-cast" aria-label="本镜头最终生效的人物与造型">
-                      <div className="shot-effective-cast-heading"><strong>最终生效的人物与造型</strong><small>已合并场次默认与当前镜头覆盖；生成参考以这里为准。</small></div>
+                      <div className="shot-effective-cast-heading"><strong>最终生效的人物与造型</strong></div>
                       <div className="shot-inherited-cast">{effectiveCastForSelectedShot.map((entry) => {
                         const character = characterByPath.get(entry.characterPath);
                         const look = getLookForPath(character, entry.lookPath);
@@ -3947,27 +4057,25 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                           ?? character?.confirmedVisuals.turnaround
                           ?? character?.confirmedVisuals.costume;
                         return <article className="shot-inherited-cast-card" key={`effective-${entry.characterPath}`}>
-                          {preview && isImage(preview) ? <button aria-label={`查看${character?.name || "人物"}最终生效造型`} className="shot-inherited-cast-image" onClick={() => setMediaPreview(preview)} type="button"><img alt={`${character?.name || "人物"}最终生效造型`} src={mediaUrl(preview)} /></button> : <span className="shot-inherited-cast-mark">人</span>}
+                          {preview && isImage(preview) ? <button aria-label={`查看${character?.name || "人物"}最终生效造型`} className="shot-inherited-cast-image" onClick={() => setMediaPreview(preview)} type="button"><img alt={`${character?.name || "人物"}最终生效造型`} decoding="async" loading="lazy" src={mediaUrl(preview)} /></button> : <span className="shot-inherited-cast-mark">人</span>}
                           <div><strong>{character?.name || displayFileName(entry.characterPath)}</strong><small>{displayLookLabel(character, entry.lookPath)} · {entry.sourceLabel}</small>{entry.state ? <em>{entry.state}</em> : entry.continuity ? <em>{entry.continuity}</em> : null}</div>
                         </article>;
                       })}</div>
                     </div> : null}
-                  </section>
-                  <details className="generation-settings">
-                    <summary><span>生成设置</span><small>提示词、负面提示词和状态</small></summary>
-                    <div className="generation-settings-fields">
-                      <TextField label="状态" onChange={(value) => setDesignDraft((draft) => ({ ...draft, status: value }))} value={designDraft.status} />
-                      <TextField label="提示词" multiline onChange={(value) => setDesignDraft((draft) => ({ ...draft, prompt: value }))} value={designDraft.prompt} />
-                      <TextField label="负面提示词" multiline onChange={(value) => setDesignDraft((draft) => ({ ...draft, negativePrompt: value }))} value={designDraft.negativePrompt} />
                     </div>
                   </details>
-                  <p className="editor-hint">场次和镜号固定；如需改标题，请使用右上角“重命名”。</p>
+                  <details className="generation-settings">
+                    <summary><span>状态</span><small>{designDraft.status || "待生成"}</small></summary>
+                    <div className="generation-settings-fields">
+                      <TextField label="状态" onChange={(value) => setDesignDraft((draft) => ({ ...draft, status: value }))} value={designDraft.status} />
+                    </div>
+                  </details>
                 </>}
               </section> : null}
-              {(selectedAsset.isDraft || activeShotWorkflowStep === "design") && selectedSourcePath ? <section className="source-context-card"><div className="source-context-heading"><div><p className="eyebrow">来源上下文</p><h3>{displayFileName(selectedSourcePath)}</h3><small title={selectedSourcePath}>原始分镜脚本</small></div><button className="source-context-toggle" disabled={sourceContext.loading} onClick={() => void toggleSourceContext()} type="button">{sourceContextOpen ? "收起原文" : sourceContext.error && sourceContext.path === selectedSourcePath ? "重新读取" : "查看原文"}</button></div>{sourceContextOpen ? <div className="source-context-body">{sourceContext.path !== selectedSourcePath || sourceContext.loading ? <p>正在读取原始剧本…</p> : sourceContext.error ? <p className="source-context-error">{sourceContext.error}</p> : <pre>{sourceContext.content || "原始剧本为空。"}</pre>}</div> : null}</section> : null}
+              {(selectedAsset.isDraft || activeShotWorkflowStep === "design") && selectedSourcePath ? <section className="source-context-card"><div className="source-context-heading"><div><h3>{displayFileName(selectedSourcePath)}</h3></div><button className="source-context-toggle" disabled={sourceContext.loading} onClick={() => void toggleSourceContext()} type="button">{sourceContextOpen ? "收起原文" : sourceContext.error && sourceContext.path === selectedSourcePath ? "重新读取" : "查看原文"}</button></div>{sourceContextOpen ? <div className="source-context-body">{sourceContext.path !== selectedSourcePath || sourceContext.loading ? <p>正在读取原始剧本…</p> : sourceContext.error ? <p className="source-context-error">{sourceContext.error}</p> : <pre>{sourceContext.content || "原始剧本为空。"}</pre>}</div> : null}</section> : null}
               {!selectedAsset.isDraft && activeShotWorkflowStep === "design" ? <WorkflowStepFooter disabled={busy} label="保存并下一步" onClick={() => void advanceShotWorkflow()} /> : null}
               {!selectedAsset.isDraft && activeShotWorkflowStep === "reference" ? <section className="workflow-step-content">
-                <div className="workflow-step-heading"><div><p className="eyebrow">02 / 05</p><h3>画面参考</h3></div><button className="studio-action-button generation-open-button" disabled={busy} onClick={() => void handleGenerateSceneImageFromShot()} type="button">生成场景图</button></div>
+                <div className="workflow-step-heading"><div><h3>画面参考</h3></div><button className="studio-action-button generation-open-button" disabled={busy} onClick={() => void handleGenerateSceneImageFromShot()} type="button">生成场景图</button></div>
                 <div className="workflow-reference-overview" aria-label="当前镜头继承资料">
                   <span className="workflow-reference-chip">{activeScene?.sceneId || selectedAsset.design.sceneId}</span>
                   {effectiveCastForSelectedShot.map((entry) => {
@@ -3977,6 +4085,15 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                   {inheritedLocationsForSelectedShot.map((entry, index) => <span className="workflow-reference-chip" key={`reference-location-${index}`}>{entry.label}{entry.detail ? ` · ${entry.detail}` : ""}</span>)}
                   {inheritedPropsForSelectedShot.map((entry, index) => <span className="workflow-reference-chip" key={`reference-prop-${index}`}>{entry.label}{entry.detail ? ` · ${entry.detail}` : ""}</span>)}
                 </div>
+                {selectedShotReferenceVisuals.length ? <section className="workflow-reference-visuals" aria-label="当前已选参考素材">
+                  <div className="workflow-reference-visuals-heading"><strong>已选参考</strong><small>{selectedShotReferenceVisuals.length} 张</small></div>
+                  <div className="workflow-reference-visual-grid">
+                    {selectedShotReferenceVisuals.map((visual) => <article className="workflow-reference-visual" key={visual.key}>
+                      <button aria-label={`查看${visual.detail}${visual.label}`} onClick={() => setMediaPreview(visual.file)} type="button"><img alt={`${visual.detail}${visual.label}`} decoding="async" loading="lazy" src={mediaUrl(visual.file)} /></button>
+                      <div><strong title={visual.label}>{visual.label}</strong><small>{visual.detail}</small></div>
+                    </article>)}
+                  </div>
+                </section> : null}
                 {selectedShotReferenceSlot ? <div className="workflow-slot"><SlotPanel
                   confirmedFile={selectedSlotVisual(selectedShotReferenceSlot)}
                   confirmedSourcePath={selectedSlotVisual(selectedShotReferenceSlot)?.path}
@@ -3985,12 +4102,12 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                   onSetConfirmed={(file) => void handleSetWorkspaceVisualSelection(selectedShotReferenceSlot, file)}
                   onTrash={(file) => void handleTrashFile(selectedShotReferenceSlot, file)}
                   onUpload={(files) => void handleUpload(selectedShotReferenceSlot, files)}
-                  slot={selectedShotReferenceSlot}
+                  slot={{ ...selectedShotReferenceSlot, label: "镜头专属参考图" }}
                 /></div> : null}
                 <WorkflowStepFooter disabled={busy} label="下一步：首帧" onClick={() => void advanceShotWorkflow()} />
               </section> : null}
               {!selectedAsset.isDraft && activeShotWorkflowStep === "firstFrame" ? <section className="workflow-step-content">
-                <div className="workflow-step-heading"><div><p className="eyebrow">03 / 05</p><h3>首帧</h3></div><button className="studio-action-button generation-open-button" disabled={busy || !hasSavedShotBrief} onClick={() => void openGeneration(hasShotReference ? "shot-first-frame-img2img-v1" : "shot-first-frame-v1")} type="button">生成首帧</button></div>
+                <div className="workflow-step-heading"><div><h3>首帧</h3></div><button className="studio-action-button generation-open-button" disabled={busy || !hasSavedShotBrief} onClick={() => void openFrameGeneration("firstFrame")} type="button">生成首帧</button></div>
                 {selectedShotFirstFrameSlot ? <div className="workflow-slot"><SlotPanel
                   confirmedFile={selectedSlotVisual(selectedShotFirstFrameSlot)}
                   confirmedSourcePath={selectedSlotVisual(selectedShotFirstFrameSlot)?.path}
@@ -4004,7 +4121,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                 <WorkflowStepFooter disabled={busy} label="下一步：尾帧" onClick={() => void advanceShotWorkflow()} />
               </section> : null}
               {!selectedAsset.isDraft && activeShotWorkflowStep === "lastFrame" ? <section className="workflow-step-content">
-                <div className="workflow-step-heading"><div><p className="eyebrow">04 / 05</p><h3>尾帧</h3></div><button className="studio-action-button generation-open-button" disabled={busy || !hasSelectedFirstFrame} onClick={() => void openGeneration("shot-last-frame-img2img-v1")} type="button">生成尾帧</button></div>
+                <div className="workflow-step-heading"><div><h3>尾帧</h3></div><button className="studio-action-button generation-open-button" disabled={busy || !hasSelectedFirstFrame} onClick={() => void openFrameGeneration("lastFrame")} type="button">生成尾帧</button></div>
                 <div className="workflow-frame-pair is-single"><WorkflowFramePreview file={selectedShotFirstFrame} label="已选首帧" onPreview={setMediaPreview} /></div>
                 {selectedShotLastFrameSlot ? <div className="workflow-slot"><SlotPanel
                   confirmedFile={selectedSlotVisual(selectedShotLastFrameSlot)}
@@ -4019,7 +4136,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                 <WorkflowStepFooter disabled={busy} label="下一步：图生视频" onClick={() => void advanceShotWorkflow()} />
               </section> : null}
               {!selectedAsset.isDraft && activeShotWorkflowStep === "video" ? <section className="workflow-step-content">
-                <div className="workflow-step-heading"><div><p className="eyebrow">05 / 05</p><h3>图生视频</h3></div></div>
+                <div className="workflow-step-heading"><div><h3>图生视频</h3></div></div>
                 <div className="workflow-frame-pair"><WorkflowFramePreview file={selectedShotFirstFrame} label="首帧" onPreview={setMediaPreview} /><WorkflowFramePreview file={selectedShotLastFrame} label="尾帧" onPreview={setMediaPreview} /></div>
                 <dl className="workflow-video-brief">
                   <div><dt>画面</dt><dd>{designDraft.content || designDraft.prompt || "未填写"}</dd></div>
@@ -4037,9 +4154,8 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                   onUpload={(files) => void handleUpload(selectedShotCandidateSlot, files)}
                   slot={selectedShotCandidateSlot}
                 /></div> : null}
-                <WorkflowStepFooter disabled={busy} label={hasGeneratedShotVideo ? "再次生成图生视频" : "提交图生视频"} onClick={() => void advanceShotWorkflow()} />
+                <WorkflowStepFooter disabled={busy} label={hasGeneratedShotVideo ? "再次生成" : "生成视频"} onClick={() => void advanceShotWorkflow()} />
               </section> : null}
-              {selectedAsset.isDraft ? <section className="draft-asset-note"><p className="eyebrow">下一步</p><p>建立镜头资产后，可添加参考图、首帧、尾帧和候选资料。</p></section> : null}
               </div>
             </div>
           )}
@@ -4062,11 +4178,12 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
 
       {modal === "generation" && generationTarget ? <GenerationModal
         asset={generationTarget}
+        frameGeneration={generationFrame}
         initialDurationSeconds={generationDurationSeconds}
         initialPresetId={generationPresetId}
         lookPath={generationTarget.type === "character" && selectedAsset?.type === "character" ? selectedCharacterLook?.rootPath : undefined}
         projectId={projectId ?? undefined}
-        onClose={() => { setModal(null); setGenerationTarget(null); setGenerationDurationSeconds(undefined); setGenerationPresetId(undefined); }}
+        onClose={() => { setModal(null); setGenerationTarget(null); setGenerationFrame(null); setGenerationDurationSeconds(undefined); setGenerationPresetId(undefined); }}
         onJobsObserved={handleGenerationJobsObserved}
         onQueued={handleGenerationQueued}
       /> : modal === "trashList" ? <TrashModal
@@ -4082,44 +4199,34 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
           <section aria-labelledby="asset-modal-title" aria-modal="true" className="modal-card asset-modal" role="dialog">
             <div className="modal-heading">
               <div>
-                <p className="eyebrow">资产操作</p>
-                <h2 id="asset-modal-title">{modal === "projectSettings" ? "项目设定" : modal === "character" ? "新建人物资产" : modal === "location" ? "新建地点/环境资产" : modal === "prop" ? "新建道具资产" : modal === "look" ? "新建人物造型" : modal === "scene" ? "新建场次资产" : modal === "shot" ? "新建镜头资产" : modal === "import" ? "导入剧本" : modal === "rename" ? "重命名资产" : "移入回收站"}</h2>
+                <h2 id="asset-modal-title">{modal === "projectSettings" ? "项目设定" : modal === "character" ? "新建人物资产" : modal === "location" ? "新建场景资产" : modal === "prop" ? "新建道具资产" : modal === "look" ? "新建人物造型" : modal === "scene" ? "新建场次资产" : modal === "shot" ? "新建镜头资产" : modal === "import" ? "导入剧本" : modal === "rename" ? "重命名资产" : "移入回收站"}</h2>
               </div>
               <button aria-label="关闭" className="icon-button" onClick={() => setModal(null)} type="button">×</button>
             </div>
             {modal === "projectSettings" ? <>
-              <p className="modal-copy">维护当前项目的故事简介、制作规范和交付要求，内容会保存到项目根目录的“项目设定.md”。</p>
               <div className="editor-card project-settings-editor">
                 <div className="editor-card-heading">
-                  <div><p className="eyebrow">项目级文档</p><h3>项目设定.md</h3></div>
+                  <div><h3>项目设定.md</h3></div>
                   <button aria-pressed={projectSettingsMode === "edit"} className="editor-mode-button" onClick={() => setProjectSettingsMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{projectSettingsMode === "preview" ? "编辑" : "预览"}</button>
                 </div>
                 {projectSettingsMode === "preview"
                   ? <ProfilePreview content={projectSettingsDraft} />
-                  : <textarea aria-label="项目设定" className="profile-textarea" onChange={(event) => { setProjectSettingsDraft(event.target.value); setProjectSettingsMode("edit"); }} placeholder="补充故事简介、世界观、画面风格、画幅和交付要求…" value={projectSettingsDraft} />}
+                  : <textarea aria-label="项目设定" className="profile-textarea" onChange={(event) => { setProjectSettingsDraft(event.target.value); setProjectSettingsMode("edit"); }} placeholder="输入项目设定" value={projectSettingsDraft} />}
               </div>
               <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !hasUnsavedProjectSettingsDraft} onClick={() => void handleSaveProjectSettings()} type="button">{busy ? "保存中…" : "保存项目设定"}</button></div>
             </> : modal === "character" ? <>
-              <p className="modal-copy">建立后会自动准备角色设定、三视图、定妆和参考图资料槽。</p>
               <TextField label="人物名称" onChange={setNewName} placeholder="例如：顾霖" value={newName} />
-              <p className="modal-field-hint">人物分类会从新建的“角色设定.md”中读取，建立后在文档里填写“角色分类”。</p>
               <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !newName.trim()} onClick={() => void handleCreateCharacter()} type="button">建立人物</button></div>
             </> : modal === "location" || modal === "prop" ? <>
-              <p className="modal-copy">{modal === "location" ? "建立后会自动准备地点/环境设定、地点图、参考图、候选和定稿资料槽。" : "建立后会自动准备道具设定、参考图、候选和定稿资料槽。"}</p>
-              <TextField label={modal === "location" ? "地点/环境名称" : "道具名称"} onChange={setNewSimpleAssetName} placeholder={modal === "location" ? "例如：废弃车站月台" : "例如：青铜短剑"} value={newSimpleAssetName} />
+              <TextField label={modal === "location" ? "场景名称" : "道具名称"} onChange={setNewSimpleAssetName} placeholder={modal === "location" ? "例如：废弃车站月台" : "例如：青铜短剑"} value={newSimpleAssetName} />
               <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !newSimpleAssetName.trim()} onClick={() => void handleCreateSimpleAsset(modal)} type="button">建立资产</button></div>
             </> : modal === "look" ? <>
-              <p className="modal-copy">新造型会建立独立的三视图、定妆、参考图和“造型设定.md”。它不会复制或移动人物已有资料。</p>
               <TextField label="造型名称" onChange={setNewLookName} placeholder="例如：边关黑衣僧" value={newLookName} />
-              <p className="modal-field-hint">系统会自动分配稳定编号，例如 LOOK-001；以后场次和镜头会引用这个造型，而不是复制图片。</p>
               <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !newLookName.trim()} onClick={() => void handleCreateCharacterLook()} type="button">建立造型</button></div>
             </> : modal === "scene" ? <>
-              <p className="modal-copy">一个场次就是一个大分镜文件夹。建立后可先上传场景图、参考图、首尾帧、候选、定稿和整场成片。</p>
               <TextField label="场次编号" onChange={setNewSceneId} placeholder="例如：EP001-SC001" value={newSceneId} />
-              <p className="modal-field-hint">场次编号是其下镜头的稳定身份；建立后不能在工作台内直接改名。</p>
               <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !newSceneId.trim()} onClick={() => void handleCreateScene()} type="button">建立场次</button></div>
             </> : modal === "shot" ? <>
-              <p className="modal-copy">镜头会归入对应场次文件夹；如果该场次还不存在，系统会先安全建立它。</p>
               <div className="field-grid"><TextField label="场次" onChange={(sceneId) => {
                 setNewSceneId(sceneId);
                 setNewShotId(suggestNextShotId(sceneGroups.find((scene) => scene.sceneId === sceneId)?.shots || []));
@@ -4127,7 +4234,6 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
               <TextField label="镜头标题" onChange={setNewShotTitle} placeholder="例如：焦土尽头" value={newShotTitle} />
               <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !newSceneId.trim() || !newShotId.trim() || !newShotTitle.trim()} onClick={() => void handleCreateShot()} type="button">建立镜头</button></div>
             </> : modal === "import" ? <>
-              <p className="modal-copy">从当前场次的分镜脚本建立镜头资产。导入会保留原始说明，并自动跳过已有镜号。</p>
               <div className="storyboard-import-layout">
                 <div className="import-source-list" aria-label="剧本来源">
                   <p className="eyebrow">选择剧本</p>
@@ -4142,11 +4248,10 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
               </div>
               <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !importSourcePath || !importShotIds.length} onClick={() => { if (importSourcePath) void handleImportStoryboard(importSourcePath, importShotIds); }} type="button">建立 {importShotIds.length} 个镜头</button></div>
             </> : modal === "rename" ? <>
-              <p className="modal-copy">只改变当前资产名称，不会改变它所属的创作对象类型。</p>
               <TextField label="新名称" onChange={setRenameValue} value={renameValue} />
               <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !renameValue.trim()} onClick={() => void handleRename()} type="button">确认重命名</button></div>
             </> : <>
-              <div className="trash-warning"><span>!</span><p><b>确认移入回收站？</b><br />整个资产会被移动到本地回收站，之后仍可恢复。</p></div>
+              <div className="trash-warning"><span>!</span><p><b>确认移入回收站？</b></p></div>
               <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button destructive" disabled={busy} onClick={() => void handleTrashAsset()} type="button">移入回收站</button></div>
             </>}
           </section>

@@ -27,9 +27,13 @@ const SSH_PORT_MIN = 1
 const SSH_PORT_MAX = 65_535
 const SSH_PASSWORD_MAX = 4_096
 const SSH_PASSWORD_ENV = 'DSH_AI_DRAMA_SSH_PASSWORD'
+const BRIDGE_SOURCE_DIR = path.resolve(MODULE_DIR, '..', 'cloud-bridge')
+export const BRIDGE_SYNC_REMOTE_DIR = '/root/comfy-bridge'
+const BRIDGE_SYNC_TIMEOUT_MS = 60_000
 let sshProcess = null
 let sshProcessError = ''
 let sshAskpassCleanup = null
+let bridgeSyncing = false
 
 const MAX_BODY_BYTES = 1024 * 1024
 const MAX_TEXT_BYTES = 256 * 1024
@@ -68,7 +72,7 @@ function sshPassword(value) {
   return value
 }
 
-function normalizeSshConfig(value = {}) {
+export function normalizeSshConfig(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new WorkbenchError('SSH 配置格式无效。')
   const config = {
     version: SSH_CONFIG_VERSION,
@@ -81,6 +85,52 @@ function normalizeSshConfig(value = {}) {
     remotePort: value.remotePort === undefined || value.remotePort === '' ? 8188 : sshPort(value.remotePort, '远端转发端口'),
   }
   return config
+}
+
+export async function getBridgeSyncManifest(sourceDir = BRIDGE_SOURCE_DIR) {
+  const requiredFiles = ['bridge.py', 'run.sh']
+  const collectJsonFiles = async directory => {
+    const entries = await fs.readdir(path.join(sourceDir, directory), { withFileTypes: true })
+    return entries
+      .filter(entry => entry.isFile() && !entry.isSymbolicLink() && entry.name.endsWith('.json'))
+      .map(entry => `${directory}/${entry.name}`)
+      .sort()
+  }
+
+  try {
+    for (const relativePath of requiredFiles) {
+      const info = await fs.lstat(path.join(sourceDir, relativePath))
+      if (!info.isFile() || info.isSymbolicLink()) throw new Error(`${relativePath} 不是普通文件`)
+    }
+    const workflowFiles = await collectJsonFiles('workflows')
+    const apiWorkflowFiles = await collectJsonFiles('api-workflows')
+    if (!workflowFiles.length || !apiWorkflowFiles.length) throw new Error('工作流文件不完整')
+
+    const workflowIds = []
+    for (const relativePath of workflowFiles) {
+      const value = JSON.parse(await fs.readFile(path.join(sourceDir, relativePath), 'utf8'))
+      if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.id !== 'string' || !value.id.trim()) {
+        throw new Error(`${relativePath} 缺少有效工作流 ID`)
+      }
+      workflowIds.push(value.id.trim())
+    }
+    if (new Set(workflowIds).size !== workflowIds.length) throw new Error('工作流 ID 重复')
+    return {
+      sourceDir,
+      files: [...requiredFiles, ...workflowFiles, ...apiWorkflowFiles],
+      workflowIds: workflowIds.sort(),
+    }
+  } catch (error) {
+    throw new WorkbenchError(`同步准备失败：${errorMessage(error)}`)
+  }
+}
+
+export function missingBridgeWorkflowIds(value, expectedIds) {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.workflows)) {
+    throw new WorkbenchError('工作流校验失败：Bridge 返回格式无效。')
+  }
+  const actual = new Set(value.workflows.map(item => item?.id).filter(id => typeof id === 'string'))
+  return expectedIds.filter(id => !actual.has(id))
 }
 
 async function readSshConfig() {
@@ -202,6 +252,173 @@ async function getSshStatus(config = undefined) {
     : { state: 'stopped', label: '已停止' }
 }
 
+function passwordSshArgs(config, remoteCommand) {
+  return [
+    '-T',
+    '-o', 'ConnectTimeout=15',
+    '-o', 'BatchMode=no',
+    '-o', 'PubkeyAuthentication=no',
+    '-o', 'PasswordAuthentication=yes',
+    '-o', 'PreferredAuthentications=password',
+    '-o', 'ControlPath=none',
+    '-o', 'IdentityAgent=none',
+    '-p', String(config.port),
+    `${config.user}@${config.host}`,
+    remoteCommand,
+  ]
+}
+
+function sshErrorDetail(value, password) {
+  const text = String(value).trim()
+  return (password && text.includes(password) ? text.split(password).join('[已隐藏]') : text).slice(-1_000)
+}
+
+function bridgeDeployCommand() {
+  return [
+    'set -eu',
+    `target='${BRIDGE_SYNC_REMOTE_DIR}'`,
+    'stage=$(mktemp -d /tmp/dsh-comfy-bridge-sync.XXXXXX)',
+    'trap \'rm -rf "$stage"\' EXIT HUP INT TERM',
+    'tar -xzf - -C "$stage"',
+    'test -f "$stage/bridge.py" && test -f "$stage/run.sh"',
+    'test -d "$stage/workflows" && test -d "$stage/api-workflows"',
+    'for directory in "$target" "$target/workflows" "$target/api-workflows"; do if [ -L "$directory" ]; then echo "Refusing symlink target: $directory" >&2; exit 31; fi; done',
+    'mkdir -p "$target/workflows" "$target/api-workflows"',
+    'install -m 0644 "$stage/bridge.py" "$target/bridge.py"',
+    'install -m 0755 "$stage/run.sh" "$target/run.sh"',
+    'install -m 0644 "$stage"/workflows/*.json "$target/workflows/"',
+    'install -m 0644 "$stage"/api-workflows/*.json "$target/api-workflows/"',
+  ].join('\n')
+}
+
+function bridgeRestartCommand() {
+  return [
+    'set -eu',
+    `target='${BRIDGE_SYNC_REMOTE_DIR}'`,
+    'if command -v systemctl >/dev/null 2>&1 && systemctl cat comfy-bridge.service >/dev/null 2>&1; then',
+    '  systemctl restart comfy-bridge.service',
+    'else',
+    '  command -v pgrep >/dev/null 2>&1 || { echo "pgrep is required to restart Comfy Bridge" >&2; exit 32; }',
+    '  pattern=\'^([^ ]*/)?python3([.][0-9]+)? /root/comfy-bridge/bridge[.]py$\'',
+    '  pids=$(pgrep -f "$pattern" || true)',
+    '  if [ -n "$pids" ]; then kill $pids; fi',
+    '  attempts=0',
+    '  while pgrep -f "$pattern" >/dev/null 2>&1; do attempts=$((attempts + 1)); if [ "$attempts" -ge 10 ]; then echo "Old Comfy Bridge process did not stop" >&2; exit 33; fi; sleep 0.5; done',
+    '  cd "$target"',
+    '  nohup ./run.sh >> bridge.log 2>&1 </dev/null &',
+    'fi',
+  ].join('\n')
+}
+
+function runPasswordSshCommand(config, environment, remoteCommand, label, password) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('ssh', passwordSshArgs(config, remoteCommand), { env: environment, stdio: ['ignore', 'ignore', 'pipe'] })
+    let detail = ''
+    let settled = false
+    let timer
+    const finish = error => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (error) reject(error)
+      else resolve()
+    }
+    timer = setTimeout(() => {
+      child.kill('SIGTERM')
+      finish(new WorkbenchError(`${label}超时。`))
+    }, BRIDGE_SYNC_TIMEOUT_MS)
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', chunk => { detail = `${detail}${chunk}`.slice(-2_000) })
+    child.once('error', error => finish(new WorkbenchError(`${label}：${errorMessage(error)}`)))
+    child.once('close', code => {
+      if (code === 0) finish()
+      else {
+        const safeDetail = sshErrorDetail(detail, password)
+        finish(new WorkbenchError(`${label}${safeDetail ? `：${safeDetail}` : `（ssh 已退出 ${code}）`}`))
+      }
+    })
+  })
+}
+
+function uploadBridgeSyncArchive(config, environment, manifest, password) {
+  return new Promise((resolve, reject) => {
+    const archive = spawn('tar', ['-czf', '-', '-C', manifest.sourceDir, ...manifest.files], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const remote = spawn('ssh', passwordSshArgs(config, bridgeDeployCommand()), { env: environment, stdio: ['pipe', 'ignore', 'pipe'] })
+    let archiveCode
+    let remoteCode
+    let archiveDetail = ''
+    let remoteDetail = ''
+    let settled = false
+    let timer
+    const stop = () => {
+      if (archive.exitCode === null) archive.kill('SIGTERM')
+      if (remote.exitCode === null) remote.kill('SIGTERM')
+    }
+    const finish = error => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (error) {
+        stop()
+        reject(error)
+      } else resolve()
+    }
+    const inspectExit = () => {
+      if (archiveCode === undefined || remoteCode === undefined) return
+      if (remoteCode !== 0) {
+        const detail = sshErrorDetail(remoteDetail, password)
+        finish(new WorkbenchError(`工作流上传失败${detail ? `：${detail}` : `（ssh 已退出 ${remoteCode}）`}`))
+      } else if (archiveCode !== 0) {
+        finish(new WorkbenchError(`同步准备失败：本地打包失败${archiveDetail.trim() ? `：${archiveDetail.trim().slice(-1_000)}` : ''}`))
+      } else finish()
+    }
+    timer = setTimeout(() => finish(new WorkbenchError('工作流上传超时。')), BRIDGE_SYNC_TIMEOUT_MS)
+    archive.stderr.setEncoding('utf8')
+    remote.stderr.setEncoding('utf8')
+    archive.stderr.on('data', chunk => { archiveDetail = `${archiveDetail}${chunk}`.slice(-2_000) })
+    remote.stderr.on('data', chunk => { remoteDetail = `${remoteDetail}${chunk}`.slice(-2_000) })
+    remote.stdin.on('error', () => undefined)
+    archive.stdout.pipe(remote.stdin)
+    archive.once('error', error => finish(new WorkbenchError(`同步准备失败：${errorMessage(error)}`)))
+    remote.once('error', error => finish(new WorkbenchError(`工作流上传失败：${errorMessage(error)}`)))
+    archive.once('close', code => { archiveCode = code; inspectExit() })
+    remote.once('close', code => { remoteCode = code; inspectExit() })
+  })
+}
+
+async function waitForBridgeWorkflows(config, expectedIds, attempts = 20) {
+  const comfy = await loadComfyConfig()
+  const profile = comfy.profiles.find(item => item.id === comfy.activeProfile)
+  if (!profile?.enabled || !profile.token) {
+    throw new WorkbenchError('工作流校验失败：当前生成服务器缺少 Bridge Token。')
+  }
+  let lastDetail = ''
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 3_000)
+    try {
+      const response = await fetch(`http://127.0.0.1:${config.localPort}/workflows`, {
+        headers: { authorization: `Bearer ${profile.token}` },
+        signal: controller.signal,
+      })
+      if (!response.ok) {
+        lastDetail = `Bridge 返回 HTTP ${response.status}`
+      } else {
+        const payload = await response.json()
+        const missing = missingBridgeWorkflowIds(payload, expectedIds)
+        if (!missing.length) return expectedIds
+        lastDetail = `缺少 ${missing.join('、')}`
+      }
+    } catch (error) {
+      lastDetail = error?.name === 'AbortError' ? 'Bridge 响应超时' : errorMessage(error)
+    } finally {
+      clearTimeout(timer)
+    }
+    if (attempt < attempts - 1) await new Promise(resolve => setTimeout(resolve, 500))
+  }
+  throw new WorkbenchError(`工作流校验失败：${lastDetail || '无法读取 Bridge 工作流。'}`)
+}
+
 function runRemoteBridgeStart(config, environment) {
   return new Promise((resolve, reject) => {
     const destination = `${config.user}@${config.host}`
@@ -316,6 +533,64 @@ async function stopSshTunnel() {
   return sshPublicConfig(await readSshConfig(), await getSshStatus())
 }
 
+function sameSshTunnelConfig(left, right) {
+  return ['host', 'port', 'user', 'localPort', 'remoteHost', 'remotePort']
+    .every(key => left[key] === right[key])
+}
+
+async function syncRemoteBridge(rawConfig) {
+  if (bridgeSyncing) throw new WorkbenchError('工作流正在同步，请稍候。')
+  bridgeSyncing = true
+  try {
+    const input = rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig) ? rawConfig : {}
+    const previous = await readSshConfig()
+    const config = normalizeSshConfig({ ...previous, ...input })
+    if (!config.host || !config.user) throw new WorkbenchError('SSH 主机和用户名不能为空。')
+    const password = sshPassword(input.password)
+    const manifest = await getBridgeSyncManifest()
+    const replaceTunnel = sshProcess && !sshProcess.killed && !sameSshTunnelConfig(previous, config)
+    const askpass = await createSshAskpass()
+    const environment = {
+      ...process.env,
+      SSH_ASKPASS: askpass.path,
+      SSH_ASKPASS_REQUIRE: 'force',
+      DISPLAY: process.env.DISPLAY || ':0',
+      [SSH_PASSWORD_ENV]: password,
+    }
+    try {
+      await uploadBridgeSyncArchive(config, environment, manifest, password)
+      await runPasswordSshCommand(config, environment, bridgeRestartCommand(), 'Bridge 重启失败', password)
+    } finally {
+      await askpass.cleanup()
+    }
+
+    if (replaceTunnel) {
+      await stopSshTunnel()
+      await new Promise(resolve => setTimeout(resolve, 250))
+    }
+    const saved = await writeSshConfig(config)
+    if (!sshProcess || sshProcess.killed) {
+      try {
+        await startSshTunnel({ ...saved, password })
+      } catch (error) {
+        throw new WorkbenchError(`SSH 隧道启动失败：${errorMessage(error)}`)
+      }
+    }
+    const workflowIds = await waitForBridgeWorkflows(saved, manifest.workflowIds)
+    const status = await getSshStatus(saved)
+    return {
+      ...sshPublicConfig(saved, status),
+      sync: {
+        workflowCount: workflowIds.length,
+        workflowIds,
+        message: `已同步 ${workflowIds.length} 个工作流`,
+      },
+    }
+  } finally {
+    bridgeSyncing = false
+  }
+}
+
 async function handleSshRequest(req, res, url) {
   if (!url.pathname.startsWith('/ai-drama/api/ssh')) return false
   if (req.method === 'GET') {
@@ -332,6 +607,9 @@ async function handleSshRequest(req, res, url) {
     const saved = await readSshConfig()
     const config = Object.keys(body).length ? { ...saved, ...body } : saved
     return responseJson(res, 200, await startSshTunnel(config)) || true
+  }
+  if (url.pathname === '/ai-drama/api/ssh/sync' && req.method === 'POST') {
+    return responseJson(res, 200, await syncRemoteBridge(body)) || true
   }
   if (url.pathname === '/ai-drama/api/ssh/stop' && req.method === 'POST') {
     return responseJson(res, 200, await stopSshTunnel()) || true

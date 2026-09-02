@@ -734,6 +734,12 @@ def normalize_new_location(raw: Any, index: int) -> dict[str, Any]:
         "name": safe_segment(item.get("name"), "场景名称"),
         "description": read_text_value(item.get("description"), "场景说明", maximum=MAX_LONG_TEXT_CHARS),
         "key_visuals": string_list(item.get("key_visuals"), "场景关键视觉", maximum=30),
+        # Keep prompts separate from the human-readable setting so the
+        # workbench does not have to submit the whole Markdown document.
+        "prompt": read_text_value(item.get("prompt"), "场景图提示词", maximum=MAX_LONG_TEXT_CHARS, required=False),
+        "negative_prompt": read_text_value(
+            item.get("negative_prompt"), "场景图负面提示词", maximum=MAX_LONG_TEXT_CHARS, required=False,
+        ),
     }
 
 
@@ -743,6 +749,10 @@ def normalize_new_prop(raw: Any, index: int) -> dict[str, Any]:
         "name": safe_segment(item.get("name"), "道具名称"),
         "description": read_text_value(item.get("description"), "道具说明", maximum=MAX_LONG_TEXT_CHARS),
         "continuity": string_list(item.get("continuity"), "道具连续性", maximum=30),
+        "prompt": read_text_value(item.get("prompt"), "道具图提示词", maximum=MAX_LONG_TEXT_CHARS, required=False),
+        "negative_prompt": read_text_value(
+            item.get("negative_prompt"), "道具图负面提示词", maximum=MAX_LONG_TEXT_CHARS, required=False,
+        ),
     }
 
 
@@ -823,6 +833,18 @@ def normalize_shot(raw: Any, index: int) -> dict[str, Any]:
         "camera": read_text_value(item.get("camera"), "镜头运镜", maximum=MAX_SHORT_TEXT_CHARS, required=False),
         "prompt": read_text_value(item.get("prompt"), "镜头提示词", maximum=MAX_LONG_TEXT_CHARS, required=False),
         "negative_prompt": read_text_value(item.get("negative_prompt"), "镜头负面提示词", maximum=MAX_LONG_TEXT_CHARS, required=False),
+        "first_frame_prompt": read_text_value(
+            item.get("first_frame_prompt"), "首帧提示词", maximum=MAX_LONG_TEXT_CHARS, required=False,
+        ),
+        "first_frame_negative_prompt": read_text_value(
+            item.get("first_frame_negative_prompt"), "首帧负面提示词", maximum=MAX_LONG_TEXT_CHARS, required=False,
+        ),
+        "last_frame_prompt": read_text_value(
+            item.get("last_frame_prompt"), "尾帧提示词", maximum=MAX_LONG_TEXT_CHARS, required=False,
+        ),
+        "last_frame_negative_prompt": read_text_value(
+            item.get("last_frame_negative_prompt"), "尾帧负面提示词", maximum=MAX_LONG_TEXT_CHARS, required=False,
+        ),
         "references": read_text_value(item.get("references"), "镜头参考资产", maximum=MAX_SHORT_TEXT_CHARS, required=False),
         "character_overrides": [normalize_shot_character_override(override, override_index) for override_index, override in enumerate(
             require_list(item.get("character_overrides"), "镜头人物造型覆盖", MAX_SHOT_CHARACTER_OVERRIDES), start=1
@@ -1452,6 +1474,14 @@ def location_document(location: dict[str, Any], proposal_id: str) -> str:
 
 {markdown_list(location['key_visuals'])}
 
+## 场景图提示词
+
+{location['prompt']}
+
+## 负面提示词
+
+{location['negative_prompt']}
+
 ## 制作备注
 
 - **提案来源：** {proposal_id}
@@ -1470,6 +1500,14 @@ def prop_document(prop: dict[str, Any], proposal_id: str) -> str:
 ## 连续性要求
 
 {markdown_list(prop['continuity'])}
+
+## 道具图提示词
+
+{prop['prompt']}
+
+## 负面提示词
+
+{prop['negative_prompt']}
 
 ## 制作备注
 
@@ -1645,6 +1683,22 @@ def shot_document(scene: dict[str, Any], shot: dict[str, Any], proposal_id: str)
 ## 负面提示词
 
 {shot['negative_prompt']}
+
+## 首帧提示词
+
+{shot['first_frame_prompt']}
+
+## 首帧负面提示词
+
+{shot['first_frame_negative_prompt']}
+
+## 尾帧提示词
+
+{shot['last_frame_prompt']}
+
+## 尾帧负面提示词
+
+{shot['last_frame_negative_prompt']}
 
 {shot_character_overrides_section(shot['resolved_character_overrides'])}
 """

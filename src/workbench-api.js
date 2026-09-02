@@ -254,6 +254,8 @@ function isShotDesign(value) {
     'dialogue', 'camera', 'prompt', 'negativePrompt', 'references', 'status',
   ]
   return requiredFields.every(key => isText(value[key]))
+    && ['firstFramePrompt', 'firstFrameNegativePrompt', 'lastFramePrompt', 'lastFrameNegativePrompt']
+      .every(key => value[key] === undefined || isText(value[key]))
     && (value.characterOverrides === undefined
       || Array.isArray(value.characterOverrides) && value.characterOverrides.every(isShotCharacterOverride))
 }
@@ -416,6 +418,9 @@ async function serveAsset(root, req, res, url) {
   if (!type) throw new ProjectPathError('该文件类型不能预览。')
   const info = await fs.stat(absolutePath)
   if (!info.isFile()) throw new ProjectPathError('只能预览普通文件。')
+  const cacheControl = url.searchParams.get('v') === info.mtime.toISOString()
+    ? 'private, max-age=31536000, immutable'
+    : 'private, max-age=300'
   const range = parseRange(typeof req.headers.range === 'string' ? req.headers.range : undefined, info.size)
   if (range === 'invalid') {
     res.writeHead(416, { 'content-range': `bytes */${info.size}` })
@@ -423,7 +428,7 @@ async function serveAsset(root, req, res, url) {
     return
   }
   if (!info.size) {
-    res.writeHead(200, { 'accept-ranges': 'bytes', 'cache-control': 'no-store', 'content-length': '0', 'content-type': type })
+    res.writeHead(200, { 'accept-ranges': 'bytes', 'cache-control': cacheControl, 'content-length': '0', 'content-type': type })
     res.end()
     return
   }
@@ -432,7 +437,7 @@ async function serveAsset(root, req, res, url) {
   const length = end - start + 1
   res.writeHead(range ? 206 : 200, {
     'accept-ranges': 'bytes',
-    'cache-control': 'no-store',
+    'cache-control': cacheControl,
     'content-disposition': `inline; filename*=UTF-8''${encodeURIComponent(path.basename(absolutePath))}`,
     'content-length': String(length),
     'content-type': type,

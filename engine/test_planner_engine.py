@@ -210,5 +210,67 @@ class PlannerSceneAssetBindingTest(unittest.TestCase):
         with self.assertRaises(planner.PlannerError):
             planner.normalize_plan(self.base_plan(scene), self.snapshot())
 
+
+class PlannerPromptContractTest(unittest.TestCase):
+    def test_prompt_fields_survive_normalization_and_markdown_serialization(self) -> None:
+        plan = planner.normalize_plan({
+            "title": "提示词提案",
+            "summary": "验证资产与镜头提示词。",
+            "new_characters": [],
+            "look_additions": [],
+            "reuse_characters": [],
+            "new_locations": [{
+                "name": "焦土尽头",
+                "description": "断壁残垣的荒原。",
+                "key_visuals": ["铅灰天空"],
+                "prompt": "末日焦土，全景，断壁残垣",
+                "negative_prompt": "文字，水印",
+            }],
+            "reuse_locations": [],
+            "new_props": [{
+                "name": "铜钥匙",
+                "description": "磨损的旧铜钥匙。",
+                "continuity": ["始终在右手"],
+                "prompt": "旧铜钥匙，纯色背景",
+                "negative_prompt": "文字，水印",
+            }],
+            "reuse_props": [],
+            "new_scenes": [{
+                "scene_id": "SC001",
+                "title": "荒原发现",
+                "summary": "主角拾起钥匙。",
+                "character_refs": [],
+                "location_refs": ["焦土尽头"],
+                "prop_refs": ["铜钥匙"],
+                "cast": [],
+                "shots": [{
+                    "id": "SH001",
+                    "title": "发现钥匙",
+                    "content": "主角在焦土中拾起钥匙。",
+                    "prompt": "低机位，主角拾起钥匙",
+                    "negative_prompt": "文字",
+                    "first_frame_prompt": "首帧：钥匙半埋在焦土中",
+                    "first_frame_negative_prompt": "模糊",
+                    "last_frame_prompt": "尾帧：钥匙被握在手中",
+                    "last_frame_negative_prompt": "模糊",
+                }],
+            }],
+            "reuse_scenes": [],
+            "notes": [],
+        }, {"characters": [], "locations": [], "props": [], "scenes": []})
+
+        location = plan["new_locations"][0]
+        prop = plan["new_props"][0]
+        shot = plan["new_scenes"][0]["shots"][0]
+        self.assertEqual(location["prompt"], "末日焦土，全景，断壁残垣")
+        self.assertEqual(prop["negative_prompt"], "文字，水印")
+        self.assertEqual(shot["first_frame_prompt"], "首帧：钥匙半埋在焦土中")
+        self.assertEqual(shot["last_frame_prompt"], "尾帧：钥匙被握在手中")
+        self.assertIn("## 场景图提示词", planner.location_document(location, "proposal_test"))
+        self.assertIn("## 道具图提示词", planner.prop_document(prop, "proposal_test"))
+        document = planner.shot_document(plan["new_scenes"][0], shot, "proposal_test")
+        self.assertIn("## 首帧提示词", document)
+        self.assertIn("## 尾帧提示词", document)
+
 if __name__ == "__main__":
     unittest.main()

@@ -56,9 +56,21 @@ function fullPlan() {
     }],
     look_additions: [],
     reuse_characters: [],
-    new_locations: [{ name: '测试渡口', description: '雾中的石渡口。', key_visuals: ['湿石阶'] }],
+    new_locations: [{
+      name: '测试渡口',
+      description: '雾中的石渡口。',
+      key_visuals: ['湿石阶'],
+      prompt: 'cinematic foggy stone dock at night',
+      negative_prompt: 'text, watermark',
+    }],
     reuse_locations: [],
-    new_props: [{ name: '测试铜哨', description: '旧铜制哨子。', continuity: ['始终挂在腰间'] }],
+    new_props: [{
+      name: '测试铜哨',
+      description: '旧铜制哨子。',
+      continuity: ['始终挂在腰间'],
+      prompt: 'weathered brass whistle on a plain background',
+      negative_prompt: 'text, watermark',
+    }],
     reuse_props: [],
     new_scenes: [{
       scene_id: 'EP001-SC001',
@@ -82,6 +94,10 @@ function fullPlan() {
         camera: '缓慢推进',
         prompt: 'cinematic foggy dock',
         negative_prompt: 'text, watermark',
+        first_frame_prompt: 'first frame: messenger reaches the foggy stone dock',
+        first_frame_negative_prompt: 'text',
+        last_frame_prompt: 'last frame: messenger raises the brass whistle',
+        last_frame_negative_prompt: 'text',
         references: '测试角色、测试渡口、测试铜哨',
         character_overrides: [{ character: '测试角色', mode: 'inherit', state: '衣角滴水' }],
         status: '待准备',
@@ -139,7 +155,12 @@ test('planner bridge stages, confirms, commits, and rejects stale or repeated pr
     assert.equal(committed.body.result.status, 'applied')
     assert.match(await readFile(path.join(project, '主要人物', '测试角色', '角色设定.md'), 'utf8'), /角色分类：\*\* 配角/)
     assert.match(await readFile(path.join(project, '主要人物', '测试角色', '造型', 'LOOK-001-雨夜装', '造型设定.md'), 'utf8'), /LOOK-001/)
-    assert.match(await readFile(path.join(project, '分镜', 'EP001-SC001', 'SH001-雾中抵达', '镜头.md'), 'utf8'), /继承场次/)
+    assert.match(await readFile(path.join(project, '场景', '测试渡口', '场景设定.md'), 'utf8'), /cinematic foggy stone dock at night/)
+    assert.match(await readFile(path.join(project, '道具', '测试铜哨', '道具设定.md'), 'utf8'), /weathered brass whistle on a plain background/)
+    const shotMarkdown = await readFile(path.join(project, '分镜', 'EP001-SC001', 'SH001-雾中抵达', '镜头.md'), 'utf8')
+    assert.match(shotMarkdown, /继承场次/)
+    assert.match(shotMarkdown, /first frame: messenger reaches the foggy stone dock/)
+    assert.match(shotMarkdown, /last frame: messenger raises the brass whistle/)
     assert.match(await readFile(path.join(project, '分镜', 'EP001-SC001', '出场与造型表.md'), 'utf8'), /LOOK-001-雨夜装/)
 
     const repeated = await runBridge('apply', { proposal_id: proposalId, confirmation: `确认写入 ${proposalId}` }, stateDir)

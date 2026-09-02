@@ -341,7 +341,7 @@ class BridgeHttpTest(unittest.TestCase):
                 bridge.load_workflows(workflows_dir, api_workflows_dir)
 
     def test_same_client_job_id_is_atomic_under_concurrent_submission(self) -> None:
-        """Concurrent retry requests must schedule exactly one remote execution."""
+        """Concurrent duplicate submissions must schedule exactly one remote execution."""
 
         worker_count = 24
         start = threading.Barrier(worker_count)

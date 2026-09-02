@@ -66,6 +66,12 @@ sudo systemctl enable --now comfy-bridge
 sudo systemctl status comfy-bridge
 ```
 
+The workbench's **同步工作流** action is the update path for its built-in cloud
+server connection. It deploys only `bridge.py`, `run.sh`, `workflows/*.json`,
+and `api-workflows/*.json` to the fixed `/root/comfy-bridge` directory, then
+restarts and verifies the bridge. Existing `.env`, `data/`, logs, uploads, and
+job records are not copied or removed.
+
 ## Mock verification
 
 Mock mode exercises the complete bridge contract without contacting ComfyUI. A
@@ -131,7 +137,7 @@ curl -fsS -X POST \
 
 Poll the returned `id` until `status` is `completed`, then use an `outputs[].url`
 value from that response. Reusing the same `clientJobId` returns the original
-job instead of queuing a duplicate after a local retry.
+job instead of queuing a duplicate submission.
 
 ## Job contract
 
@@ -184,7 +190,7 @@ alignment expression.
 
 Possible statuses are `queued`, `uploading`, `running`, `downloading`,
 `completed`, `failed`, and `interrupted`. Active jobs are marked `interrupted`
-if this process restarts; submit a new job to retry them.
+if this process restarts; submit a new job instead of resuming the failed record.
 
 ## Installing a real workflow
 

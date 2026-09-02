@@ -133,18 +133,16 @@ test('Comfy archive verifies bridge size/checksum before publishing and starts w
       /Location output must target one direct child of 场景/u,
     )
 
-    let lifecycle = createComfyJob({
+    const lifecycle = createComfyJob({
       profileId: 'cloud-a',
       workflowId: 'character-turnaround-v1',
-      inputs: { prompt: 'history rollover' },
+      inputs: { prompt: 'terminal state' },
       target: { assetType: 'character', assetPath: characterPath, slot: 'turnaround' },
     })
-    for (let attempt = 0; attempt < 120; attempt += 1) {
-      lifecycle = transitionComfyJob(lifecycle, 'failed', { error: { code: 'TEST', message: 'retry', at: new Date().toISOString() } })
-      lifecycle = transitionComfyJob(lifecycle, 'queued', { message: 'retrying' })
-    }
-    assert.equal(lifecycle.history.length, 200)
-    assert.equal(lifecycle.status, 'queued')
+    const failed = transitionComfyJob(lifecycle, 'failed', { error: { code: 'TEST', message: 'failed', at: new Date().toISOString() } })
+    assert.throws(() => transitionComfyJob(failed, 'queued'), /cannot transition from failed to queued/u)
+    const cancelled = transitionComfyJob(lifecycle, 'cancelled')
+    assert.throws(() => transitionComfyJob(cancelled, 'queued'), /cannot transition from cancelled to queued/u)
   } finally {
     await rm(temporary, { recursive: true, force: true })
   }

@@ -7,6 +7,10 @@ const ACTIVE_COMFY_JOB_STATUSES = new Set([
   'archiving',
 ])
 
+export function isActiveComfyJob(job) {
+  return ACTIVE_COMFY_JOB_STATUSES.has(job?.status)
+}
+
 function isArchivedComfyJob(job) {
   return job?.status === 'completed'
     && Array.isArray(job.outputPaths)
@@ -20,7 +24,7 @@ export function reconcileComfyJobWatches(currentWatches, assetPath, jobs) {
 
   for (const job of Array.isArray(jobs) ? jobs : []) {
     if (!job || typeof job.id !== 'string' || !job.id) continue
-    if (ACTIVE_COMFY_JOB_STATUSES.has(job.status)) {
+    if (isActiveComfyJob(job)) {
       watches.set(job.id, assetPath)
       continue
     }

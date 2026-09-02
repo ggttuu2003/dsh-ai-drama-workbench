@@ -185,8 +185,14 @@ export interface ShotDesign {
   content: string;
   dialogue: string;
   camera: string;
+  /** Shared visual baseline used when a frame-specific prompt is not supplied. */
   prompt: string;
   negativePrompt: string;
+  /** Optional defaults for the two distinct image-generation steps. */
+  firstFramePrompt: string;
+  firstFrameNegativePrompt: string;
+  lastFramePrompt: string;
+  lastFrameNegativePrompt: string;
   references: string;
   /** Structured role/costume overrides. Older Markdown files simply omit this. */
   characterOverrides?: ShotCharacterOverride[];

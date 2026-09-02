@@ -40,8 +40,8 @@ const JOB_TRANSITIONS = Object.freeze({
   downloading: ['archiving', 'failed', 'cancelled'],
   archiving: ['completed', 'failed'],
   completed: [],
-  failed: ['queued', 'cancelled'],
-  cancelled: ['queued'],
+  failed: [],
+  cancelled: [],
 })
 
 const ASSET_SLOT_DEFINITIONS = deepFreeze({
@@ -69,6 +69,14 @@ const ASSET_SLOT_DEFINITIONS = deepFreeze({
     markerFile: '场景设定.md',
     slots: {
       setting: { directory: '场景图', label: '场景图', mediaKinds: ['image'] },
+      reference: { directory: '参考图', label: '参考图', mediaKinds: ['image'] },
+      candidate: { directory: '候选', label: '候选', mediaKinds: ['image', 'video'] },
+      final: { directory: '定稿', label: '定稿', mediaKinds: ['image', 'video'] },
+    },
+  },
+  prop: {
+    markerFile: '道具设定.md',
+    slots: {
       reference: { directory: '参考图', label: '参考图', mediaKinds: ['image'] },
       candidate: { directory: '候选', label: '候选', mediaKinds: ['image', 'video'] },
       final: { directory: '定稿', label: '定稿', mediaKinds: ['image', 'video'] },
@@ -123,6 +131,15 @@ const WORKFLOW_PRESETS = deepFreeze([
         { assetType: 'location', slot: 'setting' },
       ],
     },
+    inputs: standardImageInputs(),
+    uploadRoles: [{ role: 'referenceImage', required: false, mediaKind: 'image' }],
+  },
+  {
+    id: 'prop-image-v1',
+    label: '道具参考图',
+    referenceImagesEnabled: false,
+    defaults: { width: 1024, height: 1024 },
+    output: { kind: 'image', targetSlots: [{ assetType: 'prop', slot: 'reference' }] },
     inputs: standardImageInputs(),
     uploadRoles: [{ role: 'referenceImage', required: false, mediaKind: 'image' }],
   },
@@ -213,6 +230,7 @@ const DEFAULT_BRIDGE_WORKFLOW_MAP = deepFreeze({
   'character-turnaround-v1': 'image-generate',
   'character-costume-v1': 'image-generate',
   'scene-image-v1': 'image-generate',
+  'prop-image-v1': 'image-generate',
   'shot-image-v1': 'image-generate',
   'shot-first-frame-v1': 'image-generate',
   'shot-last-frame-v1': 'image-generate',
@@ -380,6 +398,9 @@ function normalizeAssetTarget(value) {
   }
   if (assetType === 'location' && (pathSegments.length !== 2 || pathSegments[0] !== '场景')) {
     throw new ComfyJobError('Location output must target one direct child of 场景.')
+  }
+  if (assetType === 'prop' && (pathSegments.length !== 2 || pathSegments[0] !== '道具')) {
+    throw new ComfyJobError('Prop output must target one direct child of 道具.')
   }
   if (assetType === 'shot' && (pathSegments.length !== 3 || pathSegments[0] !== '分镜')) {
     throw new ComfyJobError('Shot output must target a direct shot folder under 分镜.')
