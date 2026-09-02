@@ -341,8 +341,13 @@ function storyboardImportSelector(shot: ShotAsset): string {
 function displayWorkspaceAssetTitle(asset: WorkspaceSelectionAsset): string {
   if (asset.type === "character") return asset.name;
   if (asset.type === "location" || asset.type === "prop") return asset.name;
-  if (asset.type === "scene") return `${asset.sceneId} · 场次资料`;
+  if (asset.type === "scene") return `${asset.sceneId} · 场次`;
   return `${asset.design.shotId} · ${displayShotTitle(asset)}`;
+}
+
+function normalizeLegacySceneDocumentTitle(content: string, sceneId: string): string {
+  const escapedSceneId = sceneId.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return content.replace(new RegExp(`^(#\\s+${escapedSceneId})\\s+场次资产\\s*$`, "mu"), "$1 场次");
 }
 
 function displayFileName(relativePath: string): string {
@@ -563,6 +568,7 @@ function SceneAssetCard({
 }) {
   return (
     <button
+      aria-label={`场次 ${scene.sceneId}，${scene.shotCount} 个镜头`}
       aria-current={active ? "true" : undefined}
       className={`scene-asset-card ${active ? "is-active" : ""}`}
       onClick={onClick}
@@ -1373,7 +1379,7 @@ function DraftSummary({ design }: { design: ShotDesign }) {
     ["景别 / 机位", design.framing],
   ] as const;
   return (
-    <section className="draft-summary" aria-label="分镜草稿摘要">
+    <section className="draft-summary" aria-label="镜头草稿摘要">
         <dl className="draft-summary-grid">
         {items.map(([label, value]) => <div className="draft-summary-item" key={label}><dt>{label}</dt><dd>{value || "未填写"}</dd></div>)}
       </dl>
@@ -1778,7 +1784,7 @@ function GenerationModal({
   };
 
   if (!assetPath) {
-    return <div className="modal-backdrop"><section aria-modal="true" className="modal-card generation-modal" role="dialog"><div className="modal-heading"><div><h2>先建立镜头资产</h2></div><button aria-label="关闭" className="icon-button" onClick={onClose} type="button">×</button></div><div className="modal-actions"><button className="text-button" onClick={onClose} type="button">知道了</button></div></section></div>;
+    return <div className="modal-backdrop"><section aria-modal="true" className="modal-card generation-modal" role="dialog"><div className="modal-heading"><div><h2>请先新建镜头</h2></div><button aria-label="关闭" className="icon-button" onClick={onClose} type="button">×</button></div><div className="modal-actions"><button className="text-button" onClick={onClose} type="button">知道了</button></div></section></div>;
   }
 
   const profileReady = Boolean(activeProfile?.enabled && activeProfile?.configured);
@@ -2475,7 +2481,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       return hasUnsavedProfileDraft || hasUnsavedLookDraft || hasUnsavedProjectSettingsDraft;
     }
     if (selectedAsset.type === "scene") {
-      return sceneDraft !== (selectedAsset.sceneContent || "")
+      return sceneDraft !== normalizeLegacySceneDocumentTitle(selectedAsset.sceneContent || "", selectedAsset.sceneId)
         || JSON.stringify(sceneCastDraft) !== JSON.stringify(selectedAsset.castBindings)
         || hasUnsavedSceneAssetBindings
         || hasUnsavedProjectSettingsDraft;
@@ -2538,7 +2544,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   // scene editor draft is never replaced by an unrelated save.
   useEffect(() => {
     if (selectedAsset?.type !== "scene") return;
-    setSceneDraft(selectedAsset.sceneContent || "");
+    setSceneDraft(normalizeLegacySceneDocumentTitle(selectedAsset.sceneContent || "", selectedAsset.sceneId));
     setSceneMode("preview");
   }, [selectedAsset?.type === "scene" ? selectedAsset.sceneRevision : "", selectedKey]);
 
@@ -2947,7 +2953,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   const openStoryboardImport = () => {
     const firstGroup = activeDraftGroups[0];
     if (!firstGroup) {
-      notify("error", "当前场次没有可导入的分镜草稿");
+      notify("error", "当前场次没有可导入的镜头草稿");
       return;
     }
     setImportSourcePath(firstGroup.sourcePath);
@@ -2995,7 +3001,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
         await loadSnapshot(true);
       }
       const details = [
-        result.created.length ? `已建立 ${result.created.length} 个镜头` : "没有建立新镜头",
+        result.created.length ? `已创建 ${result.created.length} 个镜头` : "没有新建镜头",
         result.skipped.length ? `跳过 ${result.skipped.length} 个重复项` : "",
         result.errors.length ? `${result.errors.length} 个未完成` : "",
       ].filter(Boolean);
@@ -3017,7 +3023,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     void handleImportStoryboard(
       selectedAsset.sourcePath,
       [storyboardImportSelector(selectedAsset)],
-      "当前草稿有未保存修改。建立资产会按原始剧本导入并丢弃这些临时修改，是否继续？",
+      "当前草稿有未保存修改。新建镜头会按原始剧本导入并丢弃这些临时修改，是否继续？",
     );
   };
 
@@ -3057,7 +3063,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
 
   const handleCreateCharacter = async () => {
     if (!newName.trim()) return;
-    if (!confirmLeaveDraft("建立新人物后会刷新资产列表，当前未保存的编辑将丢失。是否继续？")) return;
+    if (!confirmLeaveDraft("新建人物后会刷新资产列表，当前未保存的编辑将丢失。是否继续？")) return;
     setBusy(true);
     try {
       const result = await postAction({
@@ -3070,7 +3076,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       setSearch("");
       await refreshAndSelect(result.path ? `character:${result.path}` : undefined);
     } catch (error) {
-      notify("error", error instanceof Error ? error.message : "建立人物失败");
+      notify("error", error instanceof Error ? error.message : "新建人物失败");
     } finally {
       setBusy(false);
     }
@@ -3078,7 +3084,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
 
   const handleCreateSimpleAsset = async (assetType: "location" | "prop") => {
     if (!newSimpleAssetName.trim()) return;
-    if (!confirmLeaveDraft("建立新资产后会刷新资产列表，当前未保存的编辑将丢失。是否继续？")) return;
+    if (!confirmLeaveDraft("新建资产后会刷新资产列表，当前未保存的编辑将丢失。是否继续？")) return;
     setBusy(true);
     try {
       const result = await postAction({ action: assetType === "location" ? "createLocation" : "createProp", name: newSimpleAssetName.trim() });
@@ -3088,7 +3094,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       setSearch("");
       await refreshAndSelect(result.path ? `${assetType}:${result.path}` : undefined);
     } catch (error) {
-      notify("error", error instanceof Error ? error.message : "建立资产失败");
+      notify("error", error instanceof Error ? error.message : "新建资产失败");
     } finally {
       setBusy(false);
     }
@@ -3108,7 +3114,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       await loadSnapshot(true);
       if (result.path) setSelectedLookPath(result.path);
     } catch (error) {
-      notify("error", error instanceof Error ? error.message : "建立人物造型失败");
+      notify("error", error instanceof Error ? error.message : "新建人物造型失败");
     } finally {
       setBusy(false);
     }
@@ -3116,7 +3122,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
 
   const handleCreateScene = async (sceneIdInput = newSceneId) => {
     if (!sceneIdInput.trim()) return;
-    if (!confirmLeaveDraft("建立场次资产后会刷新当前列表，未保存的编辑将丢失。是否继续？")) return;
+    if (!confirmLeaveDraft("新建场次后会刷新当前列表，未保存的编辑将丢失。是否继续？")) return;
     setBusy(true);
     try {
       const sceneId = sceneIdInput.trim();
@@ -3127,7 +3133,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       setSearch("");
       await refreshAndSelect(result.path ? `scene:${result.path}` : undefined);
     } catch (error) {
-      notify("error", error instanceof Error ? error.message : "建立场次资产失败");
+      notify("error", error instanceof Error ? error.message : "新建场次失败");
     } finally {
       setBusy(false);
     }
@@ -3135,7 +3141,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
 
   const handleCreateShot = async () => {
     if (!newSceneId.trim() || !newShotId.trim() || !newShotTitle.trim()) return;
-    if (!confirmLeaveDraft("建立新镜头后会刷新资产列表，当前未保存的编辑将丢失。是否继续？")) return;
+    if (!confirmLeaveDraft("新建镜头后会刷新资产列表，当前未保存的编辑将丢失。是否继续？")) return;
     setBusy(true);
     try {
       const sceneId = newSceneId.trim();
@@ -3147,7 +3153,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       setSearch("");
       await refreshAndSelect(result.path ? `shot:${result.path}` : undefined);
     } catch (error) {
-      notify("error", error instanceof Error ? error.message : "建立镜头失败");
+      notify("error", error instanceof Error ? error.message : "新建镜头失败");
     } finally {
       setBusy(false);
     }
@@ -3172,7 +3178,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
           expectedRevision: selectedAsset.profileRevision,
         });
       } else if (selectedAsset.type === "scene") {
-        if (!selectedAsset.scenePath) throw new Error("请先补齐场次资产后再编辑场次说明。");
+        if (!selectedAsset.scenePath) throw new Error("请先完善场次后再编辑场次说明。");
         await postAction({
           action: "updateSceneDocument",
           assetPath: selectedAsset.rootPath,
@@ -3290,7 +3296,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   const addSceneCastBinding = () => {
     const character = characterAssets[0];
     if (!character) {
-      notify("error", "请先建立人物资产，再为场次绑定造型");
+      notify("error", "请先新建人物，再为场次绑定造型");
       return;
     }
     setSceneCastDraft((current) => [...current, {
@@ -3314,7 +3320,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
 
   const addSceneLocationBinding = () => {
     if (!locationAssets.length) {
-      notify("error", "请先在资产库建立场景，再为本场添加引用");
+      notify("error", "请先在资产库新建场景，再为本场添加引用");
       return;
     }
     setSceneLocationBindingsDraft((current) => [...current, {
@@ -3329,7 +3335,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
 
   const addScenePropBinding = () => {
     if (!propAssets.length) {
-      notify("error", "请先在资产库建立道具，再为本场添加引用");
+      notify("error", "请先在资产库新建道具，再为本场添加引用");
       return;
     }
     setScenePropBindingsDraft((current) => [...current, {
@@ -3384,7 +3390,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     } catch (error) {
       if (error instanceof AssetApiError && error.code === "REVISION_CONFLICT") {
         setRevisionConflictKey(assetKey(selectedAsset));
-        notify("error", "场次资产表已在其他位置更新；当前草稿仍保留，请重新读取后再保存。");
+        notify("error", "场次资料已在其他位置更新；当前草稿仍保留，请重新读取后再保存。");
       } else {
         notify("error", error instanceof Error ? error.message : "保存本场引用资产失败");
       }
@@ -3398,7 +3404,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     const inherited = inheritedSceneCastForSelectedShot[0];
     const character = inherited ? characterByPath.get(inherited.characterPath) : characterAssets[0];
     if (!character) {
-      notify("error", "请先建立人物资产，再为镜头设置人物造型");
+      notify("error", "请先新建人物，再为镜头设置人物造型");
       return;
     }
     const existing = designDraft.characterOverrides ?? [];
@@ -3767,11 +3773,11 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
 
       <div className="asset-workspace-grid">
         <aside className="asset-library-rail">
-          <div className="asset-rail-heading"><h1>资产</h1></div>
-          <div className="asset-tabs" role="tablist" aria-label="分镜与资产库">
+          <div className="asset-rail-heading"><h1>工作台</h1></div>
+          <div className="asset-tabs" role="tablist" aria-label="分镜制作与资产库">
             <div className="asset-nav-group">
-              <span className="asset-nav-group-label">制作</span>
-              <button aria-controls="asset-list-panel" aria-selected={activeTab === "shots"} className={`is-primary-tab ${activeTab === "shots" ? "is-active" : ""}`} id="shots-tab" onClick={() => changeTab("shots")} role="tab" tabIndex={activeTab === "shots" ? 0 : -1} type="button"><span>分镜</span><b>{sceneGroups.length}</b></button>
+              <span className="asset-nav-group-label">分镜制作</span>
+              <button aria-controls="asset-list-panel" aria-selected={activeTab === "shots"} className={`is-primary-tab ${activeTab === "shots" ? "is-active" : ""}`} id="shots-tab" onClick={() => changeTab("shots")} role="tab" tabIndex={activeTab === "shots" ? 0 : -1} type="button"><span>场次</span><b>{sceneGroups.length}</b></button>
             </div>
             <div className="asset-nav-group">
               <span className="asset-nav-group-label">资产库</span>
@@ -3795,7 +3801,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
           </div> : null}
           <div className="asset-list-tools"><div className="asset-search"><span aria-hidden="true">⌕</span><input aria-label={activeTab === "characters" ? "搜索人物" : activeTab === "locations" ? "搜索场景" : activeTab === "props" ? "搜索道具" : "搜索当前场次镜头"} onChange={(event) => changeSearch(event.target.value)} placeholder={activeTab === "characters" ? "搜索人物" : activeTab === "locations" ? "搜索场景" : activeTab === "props" ? "搜索道具" : "搜索当前场次镜头"} value={search} />{search ? <button aria-label="清空搜索" className="asset-search-clear" onClick={() => changeSearch("")} type="button">×</button> : null}</div>{activeTab === "characters" || activeTab === "locations" || activeTab === "props" ? <button aria-label="新建资产" className="add-asset-button" onClick={openCreate} type="button"><span aria-hidden="true">＋</span><b>新建</b></button> : <div className="scene-create-actions"><button aria-label="新建场次" className="add-asset-button is-secondary" onClick={openCreateScene} type="button"><span aria-hidden="true">＋</span><b>场次</b></button><button aria-label="新建镜头" className="add-asset-button" onClick={openCreate} type="button"><span aria-hidden="true">＋</span><b>镜头</b></button></div>}</div>
           {activeTab === "shots" ? <button className="import-storyboard-button" disabled={busy || !activeDraftGroups.length} onClick={openStoryboardImport} type="button"><span aria-hidden="true">⇣</span>导入当前场次剧本{activeDraftGroups.length ? <b>{activeDraftGroups.reduce((total, group) => total + group.shots.length, 0)}</b> : null}</button> : null}
-          {activeTab === "shots" && activeScene?.scene ? <div className="scene-asset-summary"><SceneAssetCard active={assetKey(activeScene.scene) === selectedKey} onClick={() => selectAsset(assetKey(activeScene.scene!))} scene={activeScene.scene} /></div> : activeTab === "shots" && activeScene ? <button className="scene-asset-create-note" disabled={busy} onClick={() => void handleCreateScene(activeScene.sceneId)} type="button"><b>建立场次资产</b></button> : null}
+          {activeTab === "shots" && activeScene?.scene ? <div className="scene-asset-summary"><SceneAssetCard active={assetKey(activeScene.scene) === selectedKey} onClick={() => selectAsset(assetKey(activeScene.scene!))} scene={activeScene.scene} /></div> : activeTab === "shots" && activeScene ? <button className="scene-asset-create-note" disabled={busy} onClick={() => void handleCreateScene(activeScene.sceneId)} type="button"><b>完善场次</b></button> : null}
           <div aria-labelledby={`${activeTab}-tab`} className="asset-card-list" id="asset-list-panel" role="tabpanel">
             {loading ? <div className="asset-list-empty">正在整理资产…</div> : snapshot?.error ? <div className="asset-list-empty error-copy">{snapshot.error}</div> : visibleAssets.length ? visibleAssets.map((asset) => <AssetCard active={assetKey(asset) === selectedKey} asset={asset} key={assetKey(asset)} onClick={() => selectAsset(assetKey(asset))} sceneReferenceCount={asset.type === "location" || asset.type === "prop" ? sceneReferenceCounts.get(asset.rootPath) : undefined} />) : <div className="asset-list-empty"><strong>{search ? "没有匹配资产" : activeTab === "characters" ? "还没有人物" : activeTab === "locations" ? "还没有场景" : activeTab === "props" ? "还没有道具" : "当前场次还没有镜头"}</strong></div>}
           </div>
@@ -3804,7 +3810,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
         <section className="asset-studio-column">
           <div className={`asset-studio-head asset-studio-toolbar ${selectedAsset?.type === "character" ? "is-character-studio" : ""} ${selectedAsset?.type === "scene" ? "is-scene-studio" : ""}`}>
             <div>
-              <p className="asset-breadcrumb">{selectedAsset?.type === "location" ? "资产库 / 场景" : selectedAsset?.type === "prop" ? "资产库 / 道具" : activeTab === "characters" ? selectedAsset?.type === "character" ? `资产库 / 人物 / ${selectedAsset.roleCategory}` : "资产库 / 人物" : activeScene ? `分镜 / ${activeScene.sceneId}` : "分镜 / 资产"}</p>
+              <p className="asset-breadcrumb">{selectedAsset?.type === "location" ? "资产库 / 场景" : selectedAsset?.type === "prop" ? "资产库 / 道具" : activeTab === "characters" ? selectedAsset?.type === "character" ? `资产库 / 人物 / ${selectedAsset.roleCategory}` : "资产库 / 人物" : activeScene ? `分镜制作 / 场次 / ${activeScene.sceneId}` : "分镜制作"}</p>
               <div className="asset-title-row">
                 <h2>{selectedAsset ? displayWorkspaceAssetTitle(selectedAsset) : "选择资产"}</h2>
                 {selectedAsset?.type === "character" ? <span
@@ -3909,10 +3915,10 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                   </div> : null}
                 </div>
                 {!selectedAsset.scenePath ? <div className="scene-setup-empty">
-                  <button className="save-button primary" disabled={busy} onClick={() => void handleCreateScene(selectedAsset.sceneId)} type="button">{busy ? "建立中…" : "建立场次资产"}</button>
+                  <button className="save-button primary" disabled={busy} onClick={() => void handleCreateScene(selectedAsset.sceneId)} type="button">{busy ? "创建中…" : "完善场次"}</button>
                 </div> : <>
                   {sceneMode === "preview" ? <ProfilePreview content={sceneDraft} /> : <textarea aria-label={`${selectedAsset.sceneId}场次说明`} className="profile-textarea" onChange={(event) => { setSceneDraft(event.target.value); setSceneMode("edit"); }} placeholder="输入场次说明" value={sceneDraft} />}
-                  {!selectedAsset.isComplete ? <button className="scene-complete-button" disabled={busy} onClick={() => void handleCreateScene(selectedAsset.sceneId)} type="button">补齐场次资料</button> : null}
+                  {!selectedAsset.isComplete ? <button className="scene-complete-button" disabled={busy} onClick={() => void handleCreateScene(selectedAsset.sceneId)} type="button">完善场次资料</button> : null}
                 </>}
               </section>
               <details className="scene-advanced-details">
@@ -3943,7 +3949,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
               </section> : null}
               <section className="scene-cast-editor scene-asset-bindings" aria-label="本场引用资产">
                 <div className="section-heading">
-                  <div><h3>场景与道具</h3></div>
+                  <div><h3>场景资产与道具</h3></div>
                   <div className="scene-cast-actions">
                     <button className="studio-action-button" disabled={busy || !locationAssets.length} onClick={addSceneLocationBinding} type="button">添加场景</button>
                     <button className="studio-action-button" disabled={busy || !propAssets.length} onClick={addScenePropBinding} type="button">添加道具</button>
@@ -3989,7 +3995,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
               {selectedAsset.isDraft && selectedShotMedia ? <PrimaryMedia file={selectedShotMedia} label={`${selectedAsset.design.shotId} ${displayShotTitle(selectedAsset)}`} onPreview={() => setMediaPreview(selectedShotMedia)} /> : null}
               {!selectedAsset.isDraft ? <ShotWorkflowStepper activeStep={activeShotWorkflowStep} disabled={busy} nodes={shotWorkflowNodes} onSelect={(step) => void selectShotWorkflowStep(step)} /> : null}
               <div className="workflow-step-panel">
-              {selectedAsset.isDraft || activeShotWorkflowStep === "design" ? <section className="editor-card shot-design-editor"><div className="editor-card-heading"><div><h3>{selectedAsset.isDraft ? "分镜草稿" : "镜头描述"}</h3></div>{selectedAsset.isDraft ? <button className="save-button primary" disabled={busy || !selectedAsset.sourcePath} onClick={handleCreateSelectedDraft} type="button">{busy ? "建立中…" : "建立镜头资产"}</button> : <div className="editor-card-heading-actions"><button aria-pressed={shotDesignMode === "edit"} className="editor-mode-button" onClick={() => setShotDesignMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{shotDesignMode === "preview" ? "修改" : "预览"}</button>{shotDesignMode === "edit" ? <button className="save-button" disabled={busy || !hasUnsavedShotDesign} onClick={() => void handleSave()} type="button">{busy ? "处理中…" : hasUnsavedShotDesign ? "保存" : "已保存"}</button> : null}</div>}</div>
+              {selectedAsset.isDraft || activeShotWorkflowStep === "design" ? <section className="editor-card shot-design-editor"><div className="editor-card-heading"><div><h3>{selectedAsset.isDraft ? "镜头草稿" : "镜头描述"}</h3></div>{selectedAsset.isDraft ? <button className="save-button primary" disabled={busy || !selectedAsset.sourcePath} onClick={handleCreateSelectedDraft} type="button">{busy ? "创建中…" : "新建镜头"}</button> : <div className="editor-card-heading-actions"><button aria-pressed={shotDesignMode === "edit"} className="editor-mode-button" onClick={() => setShotDesignMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{shotDesignMode === "preview" ? "修改" : "预览"}</button>{shotDesignMode === "edit" ? <button className="save-button" disabled={busy || !hasUnsavedShotDesign} onClick={() => void handleSave()} type="button">{busy ? "处理中…" : hasUnsavedShotDesign ? "保存" : "已保存"}</button> : null}</div>}</div>
                 {selectedAsset.isDraft ? <DraftSummary design={designDraft} /> : shotDesignMode === "preview" ? <ShotDesignPreview design={designDraft} /> : <>
                   <div className="design-grid">
                     <TextField label="时码" onChange={(value) => setDesignDraft((draft) => ({ ...draft, timecode: value }))} value={designDraft.timecode} />
@@ -4199,7 +4205,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
           <section aria-labelledby="asset-modal-title" aria-modal="true" className="modal-card asset-modal" role="dialog">
             <div className="modal-heading">
               <div>
-                <h2 id="asset-modal-title">{modal === "projectSettings" ? "项目设定" : modal === "character" ? "新建人物资产" : modal === "location" ? "新建场景资产" : modal === "prop" ? "新建道具资产" : modal === "look" ? "新建人物造型" : modal === "scene" ? "新建场次资产" : modal === "shot" ? "新建镜头资产" : modal === "import" ? "导入剧本" : modal === "rename" ? "重命名资产" : "移入回收站"}</h2>
+                <h2 id="asset-modal-title">{modal === "projectSettings" ? "项目设定" : modal === "character" ? "新建人物" : modal === "location" ? "新建场景" : modal === "prop" ? "新建道具" : modal === "look" ? "新建人物造型" : modal === "scene" ? "新建场次" : modal === "shot" ? "新建镜头" : modal === "import" ? "导入剧本" : modal === "rename" ? "重命名资产" : "移入回收站"}</h2>
               </div>
               <button aria-label="关闭" className="icon-button" onClick={() => setModal(null)} type="button">×</button>
             </div>
@@ -4216,23 +4222,23 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
               <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !hasUnsavedProjectSettingsDraft} onClick={() => void handleSaveProjectSettings()} type="button">{busy ? "保存中…" : "保存项目设定"}</button></div>
             </> : modal === "character" ? <>
               <TextField label="人物名称" onChange={setNewName} placeholder="例如：顾霖" value={newName} />
-              <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !newName.trim()} onClick={() => void handleCreateCharacter()} type="button">建立人物</button></div>
+              <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !newName.trim()} onClick={() => void handleCreateCharacter()} type="button">新建人物</button></div>
             </> : modal === "location" || modal === "prop" ? <>
               <TextField label={modal === "location" ? "场景名称" : "道具名称"} onChange={setNewSimpleAssetName} placeholder={modal === "location" ? "例如：废弃车站月台" : "例如：青铜短剑"} value={newSimpleAssetName} />
-              <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !newSimpleAssetName.trim()} onClick={() => void handleCreateSimpleAsset(modal)} type="button">建立资产</button></div>
+              <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !newSimpleAssetName.trim()} onClick={() => void handleCreateSimpleAsset(modal)} type="button">{modal === "location" ? "新建场景" : "新建道具"}</button></div>
             </> : modal === "look" ? <>
               <TextField label="造型名称" onChange={setNewLookName} placeholder="例如：边关黑衣僧" value={newLookName} />
-              <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !newLookName.trim()} onClick={() => void handleCreateCharacterLook()} type="button">建立造型</button></div>
+              <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !newLookName.trim()} onClick={() => void handleCreateCharacterLook()} type="button">新建造型</button></div>
             </> : modal === "scene" ? <>
               <TextField label="场次编号" onChange={setNewSceneId} placeholder="例如：EP001-SC001" value={newSceneId} />
-              <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !newSceneId.trim()} onClick={() => void handleCreateScene()} type="button">建立场次</button></div>
+              <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !newSceneId.trim()} onClick={() => void handleCreateScene()} type="button">新建场次</button></div>
             </> : modal === "shot" ? <>
               <div className="field-grid"><TextField label="场次" onChange={(sceneId) => {
                 setNewSceneId(sceneId);
                 setNewShotId(suggestNextShotId(sceneGroups.find((scene) => scene.sceneId === sceneId)?.shots || []));
               }} value={newSceneId} /><TextField label="镜号" onChange={setNewShotId} value={newShotId} /></div>
               <TextField label="镜头标题" onChange={setNewShotTitle} placeholder="例如：焦土尽头" value={newShotTitle} />
-              <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !newSceneId.trim() || !newShotId.trim() || !newShotTitle.trim()} onClick={() => void handleCreateShot()} type="button">建立镜头</button></div>
+              <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !newSceneId.trim() || !newShotId.trim() || !newShotTitle.trim()} onClick={() => void handleCreateShot()} type="button">新建镜头</button></div>
             </> : modal === "import" ? <>
               <div className="storyboard-import-layout">
                 <div className="import-source-list" aria-label="剧本来源">
@@ -4241,12 +4247,12 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                 </div>
                 <div className="import-shot-list">
                   {selectedImportGroup ? <>
-                    <div className="import-shot-list-heading"><div><p className="eyebrow">待建立镜头</p><h3>{displayFileName(selectedImportGroup.sourcePath)}</h3></div><label className="import-select-all"><input checked={selectedImportGroup.shots.length > 0 && selectedImportGroup.shots.every((shot) => importShotIds.includes(storyboardImportSelector(shot)))} onChange={toggleAllImportShots} type="checkbox" />全选</label></div>
+                    <div className="import-shot-list-heading"><div><p className="eyebrow">待新建镜头</p><h3>{displayFileName(selectedImportGroup.sourcePath)}</h3></div><label className="import-select-all"><input checked={selectedImportGroup.shots.length > 0 && selectedImportGroup.shots.every((shot) => importShotIds.includes(storyboardImportSelector(shot)))} onChange={toggleAllImportShots} type="checkbox" />全选</label></div>
                     <div className="import-shot-options">{selectedImportGroup.shots.map((shot) => { const selector = storyboardImportSelector(shot); return <label className="import-shot-option" key={selector}><input checked={importShotIds.includes(selector)} onChange={() => toggleImportShot(selector)} type="checkbox" /><span className="import-shot-id">{shot.design.shotId}</span><span className="import-shot-title">{displayShotTitle(shot)}</span><small>{shot.design.timecode || "未设时码"} · {shot.design.duration || "未设时长"}</small></label>; })}</div>
                   </> : <p className="import-empty">没有可导入的剧本草稿。</p>}
                 </div>
               </div>
-              <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !importSourcePath || !importShotIds.length} onClick={() => { if (importSourcePath) void handleImportStoryboard(importSourcePath, importShotIds); }} type="button">建立 {importShotIds.length} 个镜头</button></div>
+              <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !importSourcePath || !importShotIds.length} onClick={() => { if (importSourcePath) void handleImportStoryboard(importSourcePath, importShotIds); }} type="button">新建 {importShotIds.length} 个镜头</button></div>
             </> : modal === "rename" ? <>
               <TextField label="新名称" onChange={setRenameValue} value={renameValue} />
               <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !renameValue.trim()} onClick={() => void handleRename()} type="button">确认重命名</button></div>

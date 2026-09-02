@@ -147,6 +147,10 @@ test('scene asset bindings are created, persisted, validated, and protect refere
       await createShotAsset('EP001-SC001', 'SH001', '巷口建立')
       await createShotAsset('EP001-SC001', 'SH002', '钥匙特写')
 
+      const sceneDocument = await readFile(path.join(root, '分镜', 'EP001-SC001', '场次.md'), 'utf8')
+      assert.match(sceneDocument, /^# EP001-SC001 场次$/mu)
+      assert.doesNotMatch(sceneDocument, /场次资产/u)
+
       const assetSheetPath = '分镜/EP001-SC001/场次资产表.md'
       const initialSheet = await readFile(path.join(root, ...assetSheetPath.split('/')), 'utf8')
       assert.match(initialSheet, /workbench:scene-assets:start/u)

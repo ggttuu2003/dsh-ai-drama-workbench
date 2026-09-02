@@ -122,7 +122,7 @@ export interface ShotCharacterOverride {
   state: string;
 }
 
-/** A scene is the production-level "large storyboard" folder above its shots. */
+/** A scene represents a production scene (场次) and groups one or more shots. */
 export interface SceneAsset {
   type: "scene";
   rootPath: string;

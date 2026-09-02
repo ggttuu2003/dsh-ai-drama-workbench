@@ -2917,7 +2917,7 @@ function serializeSceneDocument(sceneId: string, source?: ShotSource): string {
   const safeSceneId = validateNewName(sceneId);
   const normalizedSource = source ? normalizeShotSource(source, source.sourceShotId) : undefined;
   return [
-    `# ${safeSceneId} 场次资产`,
+    `# ${safeSceneId} 场次`,
     "",
     "## 场次说明",
     "",
