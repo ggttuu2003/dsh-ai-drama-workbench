@@ -495,35 +495,31 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
     ])
     assert.ok(explicitFirstFrameImageToImage.payload.preview.warnings.some(message => message.includes('指定参考图')))
 
-    const rejectedUnselectedReference = await call(api, jsonRequest({
+    const unselectedReference = await call(api, jsonRequest({
       assetType: 'shot',
       assetPath: shot.rootPath,
       presetId: 'shot-first-frame-img2img-v1',
       profileId: 'mock-cloud',
       options: { width: '1280', height: '720', denoise: '0.6', referenceImagePath: unselectedSceneReference.path },
     }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
-    assert.equal(rejectedUnselectedReference.status, 200)
-    assert.ok(rejectedUnselectedReference.payload.preview.errors.some(message => message.includes('不属于当前镜头')))
+    assert.equal(unselectedReference.status, 200)
+    assert.equal(unselectedReference.payload.preview.errors.length, 0)
+    assert.deepEqual(unselectedReference.payload.preview.attachments, [
+      { role: '首帧输入图', name: '场景图-未选.png' },
+    ])
 
-    const rejectedReferencePreview = await call(api, jsonRequest({
+    const unboundCharacterPreview = await call(api, jsonRequest({
       assetType: 'shot',
       assetPath: shot.rootPath,
       presetId: 'shot-first-frame-img2img-v1',
       profileId: 'mock-cloud',
       options: { width: '1280', height: '720', denoise: '0.6', referenceImagePath: unboundCharacterReference.path },
     }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
-    assert.equal(rejectedReferencePreview.status, 200)
-    assert.ok(rejectedReferencePreview.payload.preview.errors.some(message => message.includes('不属于当前镜头')))
-    const rejectedReferenceSubmit = await call(api, jsonRequest({
-      assetType: 'shot',
-      assetPath: shot.rootPath,
-      presetId: 'shot-first-frame-img2img-v1',
-      profileId: 'mock-cloud',
-      options: { width: '1280', height: '720', denoise: '0.6', referenceImagePath: unboundCharacterReference.path },
-    }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs')
-    assert.equal(rejectedReferenceSubmit.status, 400)
-    assert.match(rejectedReferenceSubmit.payload.error, /不属于当前镜头/u)
-
+    assert.equal(unboundCharacterPreview.status, 200)
+    assert.equal(unboundCharacterPreview.payload.preview.errors.length, 0)
+    assert.deepEqual(unboundCharacterPreview.payload.preview.attachments, [
+      { role: '首帧输入图', name: '参考-01-已选.png' },
+    ])
     const lastFrameWithoutFirstFrame = await call(api, jsonRequest({
       assetType: 'shot',
       assetPath: shot.rootPath,
@@ -532,7 +528,9 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       options: { width: '1280', height: '720', denoise: '0.6' },
     }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
     assert.equal(lastFrameWithoutFirstFrame.status, 200)
-    assert.ok(lastFrameWithoutFirstFrame.payload.preview.errors.some(message => message.includes('已选首帧')))
+    assert.equal(lastFrameWithoutFirstFrame.payload.preview.errors.length, 0)
+    assert.equal(lastFrameWithoutFirstFrame.payload.preview.attachments.length, 2)
+    assert.notEqual(lastFrameWithoutFirstFrame.payload.preview.attachments[0].name, '首帧-01.png')
 
     const imageToImageDisabled = await call(api, jsonRequest({
       assetType: 'shot',
@@ -542,7 +540,7 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       options: { width: '1280', height: '720', useReferenceImages: false },
     }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
     assert.equal(imageToImageDisabled.status, 200)
-    assert.ok(imageToImageDisabled.payload.preview.errors.some(message => message.includes('已选输入图')))
+    assert.ok(imageToImageDisabled.payload.preview.errors.some(message => message.includes('需要一张参考图')))
     const imageToImageDisabledSubmit = await call(api, jsonRequest({
       assetType: 'shot',
       assetPath: shot.rootPath,
@@ -577,7 +575,10 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       options: { width: '1280', height: '720', denoise: '0.55', referenceImagePath: propReference.path },
     }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
     assert.equal(explicitLastFrameImageToImage.status, 200)
-    assert.ok(explicitLastFrameImageToImage.payload.preview.errors.some(message => message.includes('已选首帧')))
+    assert.equal(explicitLastFrameImageToImage.payload.preview.errors.length, 0)
+    assert.deepEqual(explicitLastFrameImageToImage.payload.preview.attachments, [
+      { role: '尾帧输入图', name: '道具参考-01-已选.png' },
+    ])
     assert.equal(explicitLastFrameImageToImage.payload.preview.prompt, 'last-frame frontier resolved composition')
 
     const lastFrameImageToImage = await call(api, jsonRequest({
@@ -589,9 +590,8 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
     }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
     assert.equal(lastFrameImageToImage.status, 200)
     assert.equal(lastFrameImageToImage.payload.preview.errors.length, 0)
-    assert.deepEqual(lastFrameImageToImage.payload.preview.attachments, [
-      { role: '已选首帧', name: '首帧-01-已选.png' },
-    ])
+    assert.equal(lastFrameImageToImage.payload.preview.attachments.length, 2)
+    assert.notEqual(lastFrameImageToImage.payload.preview.attachments[0].name, '首帧-01-已选.png')
     assert.equal(lastFrameImageToImage.payload.preview.prompt, 'last-frame frontier resolved composition')
     assert.equal(lastFrameImageToImage.payload.preview.negativePrompt, 'last-frame text')
 
@@ -600,8 +600,8 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       { characterPath: secondCharacter.rootPath, state: '站立', continuity: '同场', startShotId: 'SH001', endShotId: 'SH001' },
     ], scene.castRevision))
 
-    // Tail-frame generation always keeps the selected first frame as the
-    // primary input; a person/scene image can occupy the optional second slot.
+    // Tail-frame generation accepts any two project references in the order
+    // chosen by the caller; the first frame is only one optional candidate.
     const frameSnapshot = await withProjectRoot(root, () => getAssetWorkspaceSnapshot())
     const firstFrameReference = frameSnapshot.shots
       .find(item => item.rootPath === shot.rootPath)
@@ -617,8 +617,8 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
         height: '720',
         denoise: '0.55',
         referenceImages: [
-          // Deliberately send the supplemental image first. The server must
-          // still reorder the selected first frame into the primary slot.
+          // Deliberately send a person first. The server must preserve the
+          // caller's order instead of forcing the first frame into slot one.
           { path: unboundCharacterReference.path, role: 'referenceImage' },
           { path: firstFrameReference.path, role: 'referenceImage2' },
         ],
@@ -627,8 +627,8 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
     assert.equal(explicitTwoReferenceLastFrame.status, 200)
     assert.equal(explicitTwoReferenceLastFrame.payload.preview.errors.length, 0)
     assert.deepEqual(explicitTwoReferenceLastFrame.payload.preview.attachments.map(item => item.name), [
-      '首帧-01-已选.png',
       '参考-01-已选.png',
+      '首帧-01-已选.png',
     ])
     assert.equal(explicitTwoReferenceLastFrame.payload.preview.attachments.length, 2)
 
@@ -708,6 +708,7 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       return job?.status === 'completed' ? job : undefined
     })
 
+    const uploadsBeforeCharacterGeneration = bridge.received.uploads.length
     const preview = await call(api, jsonRequest({
       assetType: 'character',
       assetPath: character.rootPath,
@@ -739,7 +740,7 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       return job?.status === 'completed' ? job : undefined
     })
     assert.ok(completed.outputPaths.length === 1)
-    assert.equal(bridge.received.uploads.length, 0)
+    assert.equal(bridge.received.uploads.length, uploadsBeforeCharacterGeneration)
     assert.equal(bridge.received.jobs.length, 2)
     assert.equal(bridge.received.jobs[0].workflowId, 'image-generate')
     assert.deepEqual(bridge.received.jobs[0].uploads, [])
@@ -845,6 +846,84 @@ test('ComfyUI API falls back to the identity reference when a bound look has no 
     assert.deepEqual(explicit.payload.preview.attachments, [
       { role: '首帧输入图', name: '身份-01-已选.png' },
     ])
+  } finally {
+    await bridge.close()
+    await rm(temporary, { recursive: true, force: true })
+  }
+})
+
+test('explicit frame references can upload an ordinary project image without changing selection state', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'dsh-ai-drama-comfy-explicit-image-'))
+  const root = await realpath(temporary)
+  const configPath = path.join(temporary, 'private-comfy.json')
+  const state = { root: async () => root }
+  const bridge = await startMockBridge()
+  const api = createComfyApi(state, { configPath, pollIntervalMs: 5, maxPollMs: 2_000 })
+
+  try {
+    await saveMockConfig(configPath, bridge.url)
+    const shotPath = await withProjectRoot(root, async () => {
+      await createSceneAsset('EP001-SC602')
+      const created = await createShotAsset('EP001-SC602', 'SH001', '普通候选图镜头', {
+        sceneId: 'EP001-SC602',
+        shotId: 'SH001',
+        title: '普通候选图镜头',
+        timecode: '00:00:00:00-00:00:03:00',
+        duration: '3 秒',
+        framing: '中景',
+        content: '人物站在场景中。',
+        dialogue: '',
+        camera: '固定镜头',
+        prompt: '普通候选图测试',
+        negativePrompt: '',
+        firstFramePrompt: '',
+        firstFrameNegativePrompt: '',
+        lastFramePrompt: '',
+        lastFrameNegativePrompt: '',
+        references: '',
+        status: '待生成',
+        characterOverrides: [],
+      })
+      await saveAssetUploadStream('shot', created, 'reference', '普通候选.png', Readable.from([PIXEL_PNG]))
+      return created
+    })
+
+    const snapshot = await withProjectRoot(root, () => getAssetWorkspaceSnapshot())
+    const reference = snapshot.shots
+      .find(item => item.rootPath === shotPath)
+      ?.slots.find(slot => slot.key === 'reference')
+      ?.files.find(file => file.name === '普通候选.png')
+    assert.ok(reference?.path)
+
+    const body = {
+      assetType: 'shot',
+      assetPath: shotPath,
+      presetId: 'shot-first-frame-img2img-v1',
+      profileId: 'mock-cloud',
+      options: {
+        width: '1280',
+        height: '720',
+        denoise: '0.6',
+        referenceImagePath: reference.path,
+      },
+    }
+    const preview = await call(api, jsonRequest(body), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
+    assert.equal(preview.status, 200)
+    assert.equal(preview.payload.preview.errors.length, 0)
+    assert.deepEqual(preview.payload.preview.attachments, [{ role: '首帧输入图', name: '普通候选.png' }])
+
+    const submission = await call(api, jsonRequest(body), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs')
+    assert.equal(submission.status, 202)
+    await waitFor(async () => {
+      const listed = await call(api, getRequest(), `http://127.0.0.1/ai-drama/workbench/comfy/jobs?assetPath=${encodeURIComponent(shotPath)}`)
+      const job = listed.payload.jobs.find(item => item.id === submission.payload.job.id)
+      if (job?.status === 'failed') throw new Error(`Explicit reference job failed: ${job.error || 'unknown error'}`)
+      return job?.status === 'completed' ? job : undefined
+    })
+    assert.equal(bridge.received.uploads.length, 1)
+    assert.equal(bridge.received.uploads[0].name, '普通候选.png')
+    assert.equal(bridge.received.jobs.length, 1)
+    assert.deepEqual(bridge.received.jobs[0].uploads.map(item => item.role), ['referenceImage'])
   } finally {
     await bridge.close()
     await rm(temporary, { recursive: true, force: true })
@@ -1548,7 +1627,7 @@ test('ComfyUI refuses a queued H3 task when its frozen selected first frame was 
       return latest.status === 'failed' ? latest : undefined
     })
     assert.equal(failed.error?.code, 'REFERENCE_SELECTION_CHANGED')
-    assert.match(failed.error?.message ?? '', /已选参考图/u)
+    assert.match(failed.error?.message ?? '', /参考图在任务开始前被切换/u)
     assert.equal(bridge.received.uploads.length, 0)
     assert.equal(bridge.received.jobs.length, 0)
   } finally {

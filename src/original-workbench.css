@@ -4077,10 +4077,6 @@ summary:focus-visible {
   width: 20px;
 }
 
-.frame-reference-option.is-required {
-  cursor: default;
-}
-
 .frame-reference-option img {
   aspect-ratio: 4 / 3;
   display: block;
