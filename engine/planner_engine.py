@@ -550,14 +550,22 @@ def scan_project(root: Path) -> dict[str, Any]:
         for name, child, info in visible_children(directory, warnings):
             if not stat.S_ISDIR(info.st_mode):
                 continue
-            shot_document = child / "镜头.md"
-            if not normal_file(shot_document):
+            shot_design_path = child / "design.json"
+            if not normal_file(shot_design_path):
                 continue
-            source = read_small_text(shot_document, warnings)
-            shot_id = name.split("-", 1)[0]
-            title = parse_h1(source, name)
-            if title.startswith(f"{shot_id} "):
-                title = title[len(shot_id) + 1:].strip() or name
+            try:
+                shot_design = json.loads(read_small_text(shot_design_path, warnings))
+            except json.JSONDecodeError:
+                warnings.append(f"{relative_path(root, shot_design_path)} 不是有效 JSON，已忽略。")
+                continue
+            if not isinstance(shot_design, dict):
+                warnings.append(f"{relative_path(root, shot_design_path)} 必须是 JSON 对象，已忽略。")
+                continue
+            shot_id = shot_design.get("shotId")
+            title = shot_design.get("title")
+            if not isinstance(shot_id, str) or not shot_id or not isinstance(title, str) or not title:
+                warnings.append(f"{relative_path(root, shot_design_path)} 缺少 shotId 或 title，已忽略。")
+                continue
             shots.append({"id": shot_id, "title": title, "path": relative_path(root, child)})
         scenes.append({
             "scene_id": directory.name,
@@ -846,6 +854,9 @@ def normalize_shot(raw: Any, index: int) -> dict[str, Any]:
             item.get("last_frame_negative_prompt"), "尾帧负面提示词", maximum=MAX_LONG_TEXT_CHARS, required=False,
         ),
         "references": read_text_value(item.get("references"), "镜头参考资产", maximum=MAX_SHORT_TEXT_CHARS, required=False),
+        "video_prompt": read_text_value(
+            item.get("video_prompt"), "视频生成提示词", maximum=MAX_LONG_TEXT_CHARS, required=False,
+        ),
         "character_overrides": [normalize_shot_character_override(override, override_index) for override_index, override in enumerate(
             require_list(item.get("character_overrides"), "镜头人物造型覆盖", MAX_SHOT_CHARACTER_OVERRIDES), start=1
         )],
@@ -1215,7 +1226,11 @@ def proposal_paths(plan: dict[str, Any]) -> list[str]:
         paths.extend([f"{base}/场次.md", f"{base}/{SCENE_CAST_DOCUMENT}", f"{base}/{SCENE_ASSET_DOCUMENT}", *(f"{base}/{slot}/" for slot in SCENE_SLOTS)])
         for shot in scene["shots"]:
             shot_base = f"{base}/{shot['id']}-{shot['title']}"
-            paths.extend([f"{shot_base}/镜头.md", *(f"{shot_base}/{slot}/" for slot in SHOT_SLOTS)])
+            paths.extend([
+                f"{shot_base}/design.json",
+                f"{shot_base}/镜头.md",
+                *(f"{shot_base}/{slot}/" for slot in SHOT_SLOTS),
+            ])
     return paths
 
 
@@ -1700,8 +1715,36 @@ def shot_document(scene: dict[str, Any], shot: dict[str, Any], proposal_id: str)
 
 {shot['last_frame_negative_prompt']}
 
+## 视频生成提示词
+
+{shot['video_prompt']}
+
 {shot_character_overrides_section(shot['resolved_character_overrides'])}
 """
+
+
+def shot_design(scene: dict[str, Any], shot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "sceneId": scene["scene_id"],
+        "shotId": shot["id"],
+        "title": shot["title"],
+        "timecode": shot["timecode"],
+        "duration": shot["duration"],
+        "framing": shot["framing"],
+        "content": shot["content"],
+        "dialogue": shot["dialogue"],
+        "camera": shot["camera"],
+        "prompt": shot["prompt"],
+        "negativePrompt": shot["negative_prompt"],
+        "firstFramePrompt": shot["first_frame_prompt"],
+        "firstFrameNegativePrompt": shot["first_frame_negative_prompt"],
+        "lastFramePrompt": shot["last_frame_prompt"],
+        "lastFrameNegativePrompt": shot["last_frame_negative_prompt"],
+        "references": shot["references"],
+        "videoPrompt": shot["video_prompt"],
+        "characterOverrides": shot["resolved_character_overrides"],
+        "status": shot["status"],
+    }
 
 
 def build_stage_tree(stage: Path, proposal: dict[str, Any]) -> list[dict[str, str]]:
@@ -1772,6 +1815,7 @@ def build_stage_tree(stage: Path, proposal: dict[str, Any]) -> list[dict[str, st
         for shot in scene["shots"]:
             shot_directory = directory / f"{shot['id']}-{shot['title']}"
             shot_directory.mkdir(parents=True, exist_ok=False)
+            atomic_write_json(shot_directory / "design.json", shot_design(scene, shot))
             write_markdown(shot_directory / "镜头.md", shot_document(scene, shot, proposal_id))
             create_slots(shot_directory, SHOT_SLOTS)
         targets.append({

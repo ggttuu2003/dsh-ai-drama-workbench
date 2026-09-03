@@ -912,72 +912,6 @@ function parseStoryboardDrafts(source: IndexedEntry, markdown: string): ParsedSt
     ));
 }
 
-function parseShotDirectoryName(directoryName: string): { shotId: string; title: string } {
-  const match = directoryName.match(/^((?:SH)?\d+)(?:[-_\s]+(.+))?$/i);
-  const shotId = normalizeShotId(match?.[1] || "") || directoryName;
-  return { shotId, title: match?.[2]?.trim() || "未命名镜头" };
-}
-
-function parseShotCharacterOverrides(markdown: string): ShotCharacterOverride[] {
-  const matcher = new RegExp(
-    `${escapeRegExp(SHOT_CHARACTER_OVERRIDES_MARKER_START)}\\s*([\\s\\S]*?)\\s*${escapeRegExp(SHOT_CHARACTER_OVERRIDES_MARKER_END)}`,
-    "u",
-  );
-  const serialized = markdown.match(matcher)?.[1];
-  if (!serialized) return [];
-  try {
-    const parsed: unknown = JSON.parse(serialized);
-    if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as { overrides?: unknown }).overrides)) return [];
-    return (parsed as { overrides: unknown[] }).overrides.flatMap((entry) => {
-      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
-      const value = entry as Record<string, unknown>;
-      if (typeof value.characterPath !== "string") return [];
-      const mode = value.mode;
-      if (mode !== "inherit" && mode !== "identity" && mode !== "look") return [];
-      return [{
-        characterPath: value.characterPath,
-        mode,
-        ...(typeof value.lookPath === "string" && value.lookPath.trim() ? { lookPath: value.lookPath } : {}),
-        state: typeof value.state === "string" ? value.state : "",
-      } satisfies ShotCharacterOverride];
-    });
-  } catch {
-    return [];
-  }
-}
-
-function parseStoredShotDesign(
-  markdown: string,
-  sceneId: string,
-  directoryName: string,
-): ShotDesign {
-  const directoryDesign = parseShotDirectoryName(directoryName);
-  const heading = markdown.match(/^#\s*((?:SH)?\d+)\s*(.*?)\s*$/imu);
-  const fields = parseBoldFields(markdown);
-  return {
-    // Directory placement is the immutable asset identity. Markdown metadata is editable content.
-    sceneId,
-    shotId: directoryDesign.shotId,
-    title: heading?.[2]?.trim() || directoryDesign.title,
-    timecode: readField(fields, "时间码"),
-    duration: readField(fields, "时长"),
-    framing: readField(fields, "景别／机位", "景别/机位", "景别"),
-    content: readMarkdownSection(markdown, "画面描述") || readField(fields, "核心内容", "画面描述"),
-    dialogue: readMarkdownSection(markdown, "台词") || readField(fields, "台词"),
-    camera: readField(fields, "运镜", "摄影运动"),
-    prompt: readMarkdownSection(markdown, "提示词") || readField(fields, "提示词"),
-    negativePrompt: readMarkdownSection(markdown, "负面提示词") || readField(fields, "负面提示词"),
-    firstFramePrompt: readMarkdownSection(markdown, "首帧提示词"),
-    firstFrameNegativePrompt: readMarkdownSection(markdown, "首帧负面提示词"),
-    lastFramePrompt: readMarkdownSection(markdown, "尾帧提示词"),
-    lastFrameNegativePrompt: readMarkdownSection(markdown, "尾帧负面提示词"),
-    references: readField(fields, "参考人物", "参考角色"),
-    videoPrompt: readMarkdownSection(markdown, "视频生成提示词"),
-    characterOverrides: parseShotCharacterOverrides(markdown),
-    status: readField(fields, "状态") || "待生成",
-  };
-}
-
 function parseStoredShotSourcePath(markdown: string): string | undefined {
   const sourcePath = readField(parseBoldFields(markdown), "来源脚本");
   if (!sourcePath || getAssetKind(path.basename(sourcePath)) !== "markdown") return undefined;
@@ -1046,10 +980,61 @@ async function buildCharacterAssets(
     return roleDifference || left.name.localeCompare(right.name, "zh-Hans-CN");
   });
 }
+const MAX_SHOT_DESIGN_JSON_BYTES = 1_000_000;
+
+interface StoredShotDesign {
+  content: string;
+  design: ShotDesign;
+  source?: ShotSource;
+}
+
+function parseShotDesignJson(content: string): Omit<StoredShotDesign, "content"> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw new ProjectPathError("design.json 不是有效 JSON。");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ProjectPathError("design.json 必须是 JSON 对象。");
+  }
+  const document = parsed as Record<string, unknown>;
+  const design = validateShotDesign(document);
+  if (
+    document.source !== undefined
+    && (!document.source || typeof document.source !== "object" || Array.isArray(document.source))
+  ) {
+    throw new ProjectPathError("design.json 的 source 必须是对象。");
+  }
+  const source = document.source === undefined
+    ? undefined
+    : normalizeShotSource(document.source as ShotSource, design.shotId);
+  return { design, ...(source ? { source } : {}) };
+}
+
+async function readShotDesignJson(entry: IndexedEntry): Promise<StoredShotDesign> {
+  if (!entry.stats.isFile()) throw new ProjectPathError("design.json 必须是普通文件。");
+  if (entry.stats.size > MAX_SHOT_DESIGN_JSON_BYTES) throw new ProjectPathError("design.json 超过 1 MB。");
+  const content = await readIndexedText(entry);
+  return { content, ...parseShotDesignJson(content) };
+}
+
+function serializeShotDesignJson(design: ShotDesign, source?: ShotSource): string {
+  const validated = validateShotDesign(design);
+  const normalizedSource = source ? normalizeShotSource(source, validated.shotId) : undefined;
+  return `${JSON.stringify({
+    ...validated,
+    ...(normalizedSource ? { source: normalizedSource } : {}),
+  }, null, 2)}\n`;
+}
+
+async function writeShotDesignJson(targetPath: string, design: ShotDesign, source?: ShotSource): Promise<void> {
+  await writeTextAtomically(targetPath, serializeShotDesignJson(design, source));
+}
 
 async function buildStoredShotAssets(index: ProjectIndex): Promise<ShotAsset[]> {
   const designFiles = index.files.filter((file) => {
-    if (file.name !== "镜头.md") return false;
+    if (file.name !== "design.json") return false;
     const segments = file.relativePath.split("/");
     const storyboardIndex = segments.lastIndexOf("分镜");
     return storyboardIndex >= 0 && storyboardIndex === segments.length - 4;
@@ -1061,21 +1046,18 @@ async function buildStoredShotAssets(index: ProjectIndex): Promise<ShotAsset[]> 
     if (!assetDirectoryEntry) {
       throw new ProjectPathError("A shot asset directory disappeared while it was being scanned.");
     }
-    const sceneId = path.basename(path.dirname(assetDirectory));
     const slots = readAssetSlots(assetDirectory, SHOT_SLOT_DEFINITIONS, index.filesByDirectory);
     const slotFiles = slots.flatMap((slot) => slot.files.map((file) =>
       index.files.find((entry) => entry.relativePath === file.path),
     )).filter((entry): entry is IndexedEntry => Boolean(entry));
-
-    const markdown = await readIndexedText(designFile);
-    const sourcePath = parseStoredShotSourcePath(markdown);
+    const stored = await readShotDesignJson(designFile);
     return {
       type: "shot" as const,
       rootPath: assetDirectoryEntry.relativePath,
       designPath: designFile.relativePath,
-      designRevision: createTextRevision(markdown),
-      ...(sourcePath ? { sourcePath } : {}),
-      design: parseStoredShotDesign(markdown, sceneId, path.basename(assetDirectory)),
+      designRevision: createTextRevision(stored.content),
+      ...(stored.source ? { sourcePath: stored.source.sourcePath } : {}),
+      design: stored.design,
       slots,
       cover: pickCover(slots, ["final", "candidate", "firstFrame", "lastFrame", "reference"]),
       updatedAt: latestUpdatedAt(assetDirectoryEntry, [designFile, ...slotFiles]),
@@ -2652,7 +2634,11 @@ function validateShotCharacterOverrides(value: unknown): ShotCharacterOverride[]
   });
 }
 
-function validateShotDesign(design: ShotDesign): ShotDesign {
+function validateShotDesign(value: unknown): ShotDesign {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProjectPathError("Shot design must be an object.");
+  }
+  const design = value as Record<string, unknown>;
   return {
     sceneId: validateOneLine(design.sceneId, "Scene ID", 120),
     shotId: validateOneLine(design.shotId, "Shot ID", 120),
@@ -2666,10 +2652,17 @@ function validateShotDesign(design: ShotDesign): ShotDesign {
     prompt: validateLongText(design.prompt, "Prompt"),
     negativePrompt: validateLongText(design.negativePrompt, "Negative prompt"),
     firstFramePrompt: validateLongText(design.firstFramePrompt ?? "", "First-frame prompt"),
-    firstFrameNegativePrompt: validateLongText(design.firstFrameNegativePrompt ?? "", "First-frame negative prompt"),
+    firstFrameNegativePrompt: validateLongText(
+      design.firstFrameNegativePrompt ?? "",
+      "First-frame negative prompt",
+    ),
     lastFramePrompt: validateLongText(design.lastFramePrompt ?? "", "Last-frame prompt"),
-    lastFrameNegativePrompt: validateLongText(design.lastFrameNegativePrompt ?? "", "Last-frame negative prompt"),
+    lastFrameNegativePrompt: validateLongText(
+      design.lastFrameNegativePrompt ?? "",
+      "Last-frame negative prompt",
+    ),
     references: validateOneLine(design.references, "Character references", 500),
+    videoPrompt: validateLongText(design.videoPrompt ?? "", "Video prompt"),
     characterOverrides: validateShotCharacterOverrides(design.characterOverrides),
     status: validateOneLine(design.status, "Status", 120),
   };
@@ -2704,6 +2697,7 @@ const MODELED_SHOT_SECTIONS = new Set([
   "首帧负面提示词",
   "尾帧提示词",
   "尾帧负面提示词",
+  "视频生成提示词",
   "人物造型覆盖",
   "来源关联",
 ]);
@@ -2986,6 +2980,18 @@ async function readEditableShotMarkdown(target: string): Promise<string> {
     throw new ProjectPathError("Text assets must be smaller than 2 MB.");
   }
   return fs.readFile(target, "utf8");
+}
+
+async function readEditableShotJson(target: string): Promise<StoredShotDesign> {
+  const entry = await fs.lstat(target);
+  if (!entry.isFile() || entry.isSymbolicLink()) {
+    throw new ProjectPathError("design.json 必须是普通文件。");
+  }
+  if (entry.size > MAX_SHOT_DESIGN_JSON_BYTES) {
+    throw new ProjectPathError("design.json 超过 1 MB。");
+  }
+  const content = await fs.readFile(target, "utf8");
+  return { content, ...parseShotDesignJson(content) };
 }
 
 async function readEditableTextOrEmpty(target: string): Promise<string> {
@@ -3420,6 +3426,7 @@ export async function createShotAsset(
     lastFramePrompt: draft?.lastFramePrompt ?? "",
     lastFrameNegativePrompt: draft?.lastFrameNegativePrompt ?? "",
     references: draft?.references ?? "",
+    videoPrompt: draft?.videoPrompt ?? "",
     characterOverrides: draft?.characterOverrides ?? [],
     status: draft?.status === "待创建镜头资产" ? "待生成" : (draft?.status ?? "待生成"),
   });
@@ -3442,11 +3449,11 @@ export async function createShotAsset(
     `${safeShotId}-${safeTitle}`,
     SHOT_SLOT_DEFINITIONS,
     async (directory) => {
-      await fs.writeFile(
-        path.join(directory, "镜头.md"),
-        serializeShotDesign(design, undefined, source),
-        { flag: "wx" },
-      );
+      const jsonPath = path.join(directory, "design.json");
+      await writeShotDesignJson(jsonPath, design, source);
+      const mdPath = path.join(directory, "镜头.md");
+      const markdown = serializeShotDesign(design, undefined, source);
+      await fs.writeFile(mdPath, markdown, { flag: "wx" });
     },
     { identityPrefix: safeShotId },
   );
@@ -3950,15 +3957,21 @@ export async function updateShotDesign(
   );
   assertUnchangedShotIdentity(validatedDesign, shot.design);
   assertUnchangedShotTitle(validatedDesign, shot.design);
+
   await withDirectoryLock(path.dirname(target), async () => {
-    const existingMarkdown = await readEditableShotMarkdown(target);
-    assertCurrentTextRevision(expectedRevision, existingMarkdown);
-    await writeTextAtomically(target, serializeShotDesign({
+    const stored = await readEditableShotJson(target);
+    assertCurrentTextRevision(expectedRevision, stored.content);
+    const fullDesign = {
       ...validatedDesign,
       sceneId: shot.design.sceneId,
       shotId: shot.design.shotId,
-    }, existingMarkdown));
+    };
+    const mdPath = path.join(path.dirname(target), "镜头.md");
+    const existingMarkdown = await readEditableTextOrEmpty(mdPath);
+    await writeShotDesignJson(target, fullDesign, stored.source);
+    await writeTextAtomically(mdPath, serializeShotDesign(fullDesign, existingMarkdown, stored.source));
   });
+
   await writeAudit({ action: "update-shot-design", path: shot.designPath });
   return shot.designPath;
 }
@@ -4041,27 +4054,38 @@ export async function renameWorkspaceAsset(
     }
     await assertTargetDoesNotExist(target);
 
-    const sourceDesignPath = path.join(source, "镜头.md");
-    const existingMarkdown = await readEditableShotMarkdown(sourceDesignPath);
-    const nextMarkdown = serializeShotDesign({ ...asset.shot!.design, title }, existingMarkdown);
+    const sourceJsonPath = path.join(source, "design.json");
+    const stored = await readEditableShotJson(sourceJsonPath);
+    const sourceMarkdownPath = path.join(source, "镜头.md");
+    const existingMarkdown = await readEditableTextOrEmpty(sourceMarkdownPath);
+    const nextDesign = { ...stored.design, title };
+    const nextJson = serializeShotDesignJson(nextDesign, stored.source);
+    const nextMarkdown = serializeShotDesign(nextDesign, existingMarkdown, stored.source);
     if (Buffer.byteLength(nextMarkdown, "utf8") > MAX_TEXT_ASSET_BYTES) {
       throw new ProjectPathError("Text assets must be smaller than 2 MB.");
     }
 
-    // Prepare the new document before moving the directory so a failed write leaves no visible rename.
-    const temporaryName = `.镜头.md.${randomUUID()}.rename`;
-    const temporarySourcePath = path.join(source, temporaryName);
-    await fs.writeFile(temporarySourcePath, nextMarkdown, { flag: "wx" });
+    const temporaryId = randomUUID();
+    const temporaryJsonName = `.design.json.${temporaryId}.rename`;
+    const temporaryMarkdownName = `.镜头.md.${temporaryId}.rename`;
+    const temporaryJsonPath = path.join(source, temporaryJsonName);
+    const temporaryMarkdownPath = path.join(source, temporaryMarkdownName);
+    await Promise.all([
+      fs.writeFile(temporaryJsonPath, nextJson, { flag: "wx" }),
+      fs.writeFile(temporaryMarkdownPath, nextMarkdown, { flag: "wx" }),
+    ]);
 
     let directoryRenamed = false;
     try {
       await fs.rename(source, target);
       directoryRenamed = true;
-      await fs.rename(path.join(target, temporaryName), path.join(target, "镜头.md"));
+      await fs.rename(path.join(target, temporaryMarkdownName), path.join(target, "镜头.md"));
+      await fs.rename(path.join(target, temporaryJsonName), path.join(target, "design.json"));
     } catch (error) {
       if (directoryRenamed) {
         try {
           await fs.rename(target, source);
+          await writeTextAtomically(sourceMarkdownPath, existingMarkdown);
         } catch (rollbackError) {
           console.error("Unable to restore a shot directory after its title update failed.", {
             source,
@@ -4070,9 +4094,11 @@ export async function renameWorkspaceAsset(
           });
         }
       }
-      await fs.rm(temporarySourcePath, { force: true }).catch((cleanupError) => {
-        console.error("Unable to remove the staged shot title update.", { temporarySourcePath, cleanupError });
-      });
+      await Promise.all([temporaryJsonPath, temporaryMarkdownPath].map((temporaryPath) =>
+        fs.rm(temporaryPath, { force: true }).catch((cleanupError) => {
+          console.error("Unable to remove a staged shot title update.", { temporaryPath, cleanupError });
+        }),
+      ));
       throw error;
     }
 

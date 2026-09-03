@@ -1124,19 +1124,34 @@ async function scanProjectWorkspace(root) {
     const shots = []
     for (const child of await visibleChildren(scene.target, warnings)) {
       if (!child.info.isDirectory()) continue
-      const shotMarkdownPath = path.join(child.target, '镜头.md')
-      if (!(await normalFile(shotMarkdownPath))) continue
-      const markdown = await readSmallText(shotMarkdownPath, warnings)
+      const shotDesignPath = path.join(child.target, 'design.json')
+      if (!(await normalFile(shotDesignPath))) continue
+      const source = await readSmallText(shotDesignPath, warnings)
+      let design
+      try {
+        design = JSON.parse(source)
+      } catch {
+        warnings.push(`${normalizedRelative(root, shotDesignPath)} 不是有效 JSON，已忽略。`)
+        continue
+      }
+      if (!design || typeof design !== 'object' || Array.isArray(design)) {
+        warnings.push(`${normalizedRelative(root, shotDesignPath)} 必须是 JSON 对象，已忽略。`)
+        continue
+      }
       const shotSlots = await scanSlots(root, child.target, SHOT_SLOTS, warnings)
-      const id = /^((?:SH)?\d+)/iu.exec(child.name)?.[1]?.toUpperCase() ?? child.name
+      const id = typeof design.shotId === 'string' && design.shotId ? design.shotId : child.name
+      const title = typeof design.title === 'string' && design.title ? design.title : child.name
+      const description = [design.content, design.dialogue, design.prompt]
+        .filter(value => typeof value === 'string' && value.trim())
+        .join('\n')
       shots.push({
         id,
         name: child.name,
         path: normalizedRelative(root, child.target),
-        title: parseHeading(markdown, child.name),
-        description: previewText(markdown),
-        designPath: normalizedRelative(root, shotMarkdownPath),
-        designContent: markdown,
+        title,
+        description: previewText(description),
+        designPath: normalizedRelative(root, shotDesignPath),
+        designContent: source,
         slots: shotSlots,
         preview: firstMedia(shotSlots),
       })
@@ -1503,7 +1518,7 @@ async function visualSlotFor(root, target) {
   if (parts[0] === '分镜') {
     if (parts.length === 4 && SCENE_SLOTS.includes(slotName)) return 'scene'
     if (parts.length === 5 && SHOT_SLOTS.includes(slotName)) {
-      const shotDocument = path.join(root, ...parts.slice(0, 3), '镜头.md')
+      const shotDocument = path.join(root, ...parts.slice(0, 3), 'design.json')
       return (await normalFile(shotDocument)) ? 'shot' : null
     }
   }

@@ -205,7 +205,7 @@ export interface ShotAsset {
   type: "shot";
   rootPath?: string;
   designPath?: string;
-  /** SHA-256 revision of the raw shot Markdown; drafts have no editable asset file yet. */
+  /** SHA-256 revision of design.json; drafts have no editable asset file yet. */
   designRevision?: string;
   sourcePath?: string;
   design: ShotDesign;

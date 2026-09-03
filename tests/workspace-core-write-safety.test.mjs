@@ -16,6 +16,45 @@ import {
 
 const IMAGE = Buffer.from('workspace-core-write-safety-image')
 
+test('shot discovery reads design.json without falling back to 镜头.md', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'dsh-ai-drama-json-shot-'))
+  const root = await realpath(temporary)
+  const shotDirectory = path.join(root, '分镜', 'EP001-SC001', 'SH001-仅有旧文档')
+
+  try {
+    await mkdir(shotDirectory, { recursive: true })
+    await writeFile(path.join(shotDirectory, '镜头.md'), '# SH001 仅有旧文档\n', 'utf8')
+    const legacySnapshot = await withProjectRoot(root, () => getAssetWorkspaceSnapshot())
+    assert.equal(legacySnapshot.shots.filter(shot => !shot.isDraft).length, 0)
+
+    await writeFile(path.join(shotDirectory, 'design.json'), JSON.stringify({
+      sceneId: 'EP001-SC001',
+      shotId: 'SH001',
+      title: 'JSON 镜头',
+      timecode: '',
+      duration: '',
+      framing: '',
+      content: '只从 JSON 读取。',
+      dialogue: '',
+      camera: '',
+      prompt: '',
+      negativePrompt: '',
+      firstFramePrompt: '',
+      firstFrameNegativePrompt: '',
+      lastFramePrompt: '',
+      lastFrameNegativePrompt: '',
+      references: '',
+      videoPrompt: '',
+      characterOverrides: [],
+      status: '待生成',
+    }), 'utf8')
+    const jsonSnapshot = await withProjectRoot(root, () => getAssetWorkspaceSnapshot())
+    assert.equal(jsonSnapshot.shots.find(shot => !shot.isDraft)?.design.title, 'JSON 镜头')
+  } finally {
+    await rm(temporary, { recursive: true, force: true })
+  }
+})
+
 test('selecting an already-selected candidate repairs duplicate selections in the same slot', async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'dsh-ai-drama-selection-repair-'))
   const root = await realpath(temporary)
@@ -98,6 +137,8 @@ test('concurrent creation and shot renaming publish complete visible assets only
     const shotDirectory = path.join(root, ...renamedPath.split('/'))
     assert.ok((await readdir(shotDirectory)).every(name => !name.startsWith('.')))
     assert.match(await readFile(path.join(shotDirectory, '镜头.md'), 'utf8'), /^# SH001 更新后的镜头标题$/mu)
+    const shotDesign = JSON.parse(await readFile(path.join(shotDirectory, 'design.json'), 'utf8'))
+    assert.equal(shotDesign.title, '更新后的镜头标题')
   } finally {
     await rm(temporary, { recursive: true, force: true })
   }

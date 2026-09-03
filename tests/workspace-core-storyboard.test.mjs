@@ -93,6 +93,12 @@ test('a multi-scene storyboard scopes repeated SH001 drafts and imports them wit
     const secondMarkdown = await readFile(path.join(root, '分镜', 'EP001-SC002', 'SH001-第二场建立', '镜头.md'), 'utf8')
     assert.match(secondMarkdown, /第二场细节/u)
     assert.doesNotMatch(secondMarkdown, /第一场细节/u)
+    const secondDesign = JSON.parse(await readFile(
+      path.join(root, '分镜', 'EP001-SC002', 'SH001-第二场建立', 'design.json'),
+      'utf8',
+    ))
+    assert.equal(secondDesign.source.sourcePath, sourcePath)
+    assert.equal(secondDesign.source.sourceShotId, 'SH001')
 
     // No selector means "import every unambiguous draft"; it must still create
     // the remaining SH001 from SC001 rather than de-duplicating by shot number.

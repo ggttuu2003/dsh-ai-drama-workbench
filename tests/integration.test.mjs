@@ -161,6 +161,13 @@ test('planner bridge stages, confirms, commits, and rejects stale or repeated pr
     assert.match(shotMarkdown, /继承场次/)
     assert.match(shotMarkdown, /first frame: messenger reaches the foggy stone dock/)
     assert.match(shotMarkdown, /last frame: messenger raises the brass whistle/)
+    const shotDesign = JSON.parse(await readFile(
+      path.join(project, '分镜', 'EP001-SC001', 'SH001-雾中抵达', 'design.json'),
+      'utf8',
+    ))
+    assert.equal(shotDesign.sceneId, 'EP001-SC001')
+    assert.equal(shotDesign.shotId, 'SH001')
+    assert.equal(shotDesign.title, '雾中抵达')
     assert.match(await readFile(path.join(project, '分镜', 'EP001-SC001', '出场与造型表.md'), 'utf8'), /LOOK-001-雨夜装/)
 
     const repeated = await runBridge('apply', { proposal_id: proposalId, confirmation: `确认写入 ${proposalId}` }, stateDir)
@@ -204,7 +211,7 @@ test('selected visual rename only accepts recognized asset slots', async () => {
 
     const shotSlot = path.join(project, '分镜', 'EP001-SC001', 'SH001-测试', '候选')
     await mkdir(shotSlot, { recursive: true })
-    await writeFile(path.join(project, '分镜', 'EP001-SC001', 'SH001-测试', '镜头.md'), '# SH001 测试\n', 'utf8')
+    await writeFile(path.join(project, '分镜', 'EP001-SC001', 'SH001-测试', 'design.json'), '{}\n', 'utf8')
     await writeFile(path.join(shotSlot, '镜头候选.png'), image)
     await selectVisual(resolvedProject, '分镜/EP001-SC001/SH001-测试/候选/镜头候选.png')
     assert.equal((await readFile(path.join(shotSlot, '镜头候选-已选.png'))).toString(), image.toString())
