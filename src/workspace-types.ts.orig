@@ -194,8 +194,6 @@ export interface ShotDesign {
   lastFramePrompt: string;
   lastFrameNegativePrompt: string;
   references: string;
-  /** Video generation prompt; used by video workflows when present. */
-  videoPrompt: string;
   /** Structured role/costume overrides. Older Markdown files simply omit this. */
   characterOverrides?: ShotCharacterOverride[];
   status: string;

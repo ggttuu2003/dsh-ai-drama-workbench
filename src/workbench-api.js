@@ -39,6 +39,10 @@ import {
   updateShotDesign,
   withProjectRoot,
 } from '../lib/workspace-core.js'
+import {
+  assembleProjectVideo,
+  getVideoAssemblyPlan,
+} from './video-assembly.js'
 
 const MAX_JSON_BYTES = 4 * 1024 * 1024
 const IMAGE_EXTENSIONS = new Set(['.avif', '.gif', '.jpeg', '.jpg', '.png', '.webp'])
@@ -517,6 +521,23 @@ export async function handleWorkbenchRequest({ state, req, res, url, responseJso
     if (url.pathname === '/ai-drama/workbench/project' && req.method === 'GET') {
       const snapshot = await withProjectRoot(root, () => getAssetWorkspaceSnapshot())
       responseJson(res, 200, projectSnapshotResponse(snapshot, project))
+      return true
+    }
+    if (url.pathname === '/ai-drama/workbench/final-video' && req.method === 'GET') {
+      const plan = await withProjectRoot(root, () => getVideoAssemblyPlan())
+      responseJson(res, 200, project.id ? decorateProjectMedia({ ...plan, projectId: project.id }, project.id) : plan)
+      return true
+    }
+    if (url.pathname === '/ai-drama/workbench/final-video' && req.method === 'POST') {
+      if (!isAllowedOrigin(req)) {
+        responseJson(res, 403, { error: '不允许跨来源合并视频。' })
+        return true
+      }
+      const contentTypeHeader = String(req.headers['content-type'] ?? '').toLowerCase()
+      if (!contentTypeHeader.includes('application/json')) throw new ProjectPathError('合片操作需要 JSON 请求。')
+      const requestBody = await readJson(req)
+      const result = await withProjectRoot(root, () => assembleProjectVideo(requestBody))
+      responseJson(res, 200, project.id ? decorateProjectMedia({ ...result, projectId: project.id }, project.id) : result)
       return true
     }
     if (url.pathname === '/ai-drama/workbench/structure' && req.method === 'GET') {

@@ -235,27 +235,51 @@ class BridgeHttpTest(unittest.TestCase):
             set(image_to_image["uploadMappings"]), {"referenceImage", "referenceImage2"}
         )
         self.assertEqual(image_to_image["comfyPromptFile"], "image-to-image.api.json")
-        self.assertEqual(image_to_image["outputNodeIds"], ["17"])
-        self.assertEqual(image_to_image["uploadMappings"]["referenceImage"]["nodeId"], "18")
-        self.assertEqual(image_to_image["uploadMappings"]["referenceImage2"]["nodeId"], "21")
+        self.assertEqual(image_to_image["outputNodeIds"], ["94"])
+        self.assertEqual(image_to_image["uploadMappings"]["referenceImage"]["nodeId"], "76")
+        self.assertEqual(image_to_image["uploadMappings"]["referenceImage2"]["nodeId"], "81")
         self.assertFalse(image_to_image["uploadMappings"]["referenceImage2"]["required"])
         self.assertEqual(
             image_to_image["uploadMappings"]["referenceImage2"]["fallbackRole"],
             "referenceImage",
         )
-        self.assertEqual(image_to_image["inputMappings"]["denoise"]["nodeId"], "6")
+        self.assertEqual(
+            set(image_to_image["inputMappings"]), {"prompt", "width", "height", "seed"}
+        )
+        self.assertEqual(image_to_image["inputMappings"]["prompt"]["nodeId"], "92:109")
+        self.assertEqual(image_to_image["inputMappings"]["seed"]["nodeId"], "92:106")
+        self.assertEqual(image_to_image["inputMappings"]["seed"]["field"], "noise_seed")
         self.assertEqual(
             image_to_image["inputMappings"]["width"]["targets"],
-            [{"nodeId": "19", "field": "width"}, {"nodeId": "22", "field": "width"}],
+            [
+                {"nodeId": "92:102", "field": "width"},
+                {"nodeId": "92:113", "field": "width"},
+            ],
         )
         self.assertEqual(
             image_to_image["inputMappings"]["height"]["targets"],
-            [{"nodeId": "19", "field": "height"}, {"nodeId": "22", "field": "height"}],
+            [
+                {"nodeId": "92:102", "field": "height"},
+                {"nodeId": "92:113", "field": "height"},
+            ],
         )
-        self.assertEqual(image_to_image["comfyPrompt"]["6"]["inputs"]["latent_image"], ["24", 0])
-        self.assertEqual(image_to_image["comfyPrompt"]["24"]["class_type"], "LatentBlend")
-        self.assertEqual(image_to_image["comfyPrompt"]["24"]["inputs"]["samples1"], ["20", 0])
-        self.assertEqual(image_to_image["comfyPrompt"]["24"]["inputs"]["samples2"], ["23", 0])
+        node_types = [node["class_type"] for node in image_to_image["comfyPrompt"].values()]
+        self.assertNotIn("LatentBlend", node_types)
+        self.assertEqual(node_types.count("ReferenceLatent"), 4)
+        self.assertEqual(
+            image_to_image["comfyPrompt"]["92:103"]["inputs"]["positive"],
+            ["92:84:120", 0],
+        )
+        injected_image = self.app._apply_input_mappings(
+            image_to_image,
+            {"prompt": "new cinematic shot", "width": 1280, "height": 720, "seed": 42},
+        )
+        self.assertEqual(injected_image["92:109"]["inputs"]["text"], "new cinematic shot")
+        self.assertEqual(injected_image["92:102"]["inputs"]["width"], 1280)
+        self.assertEqual(injected_image["92:113"]["inputs"]["width"], 1280)
+        self.assertEqual(injected_image["92:102"]["inputs"]["height"], 720)
+        self.assertEqual(injected_image["92:113"]["inputs"]["height"], 720)
+        self.assertEqual(injected_image["92:106"]["inputs"]["noise_seed"], 42)
         self.assertEqual(set(video["uploadMappings"]), {"firstFrame", "lastFrame"})
         self.assertEqual(video["comfyPromptFile"], "video-first-last.api.json")
         self.assertEqual(video["outputNodeIds"], ["92"])
@@ -316,7 +340,7 @@ class BridgeHttpTest(unittest.TestCase):
             bridge.validate_workflow(invalid_fallback, "invalid.json")
 
     def test_image_to_image_injects_second_reference_and_reuses_primary_when_omitted(self) -> None:
-        """The optional second upload must drive node 21, with a safe fallback."""
+        """The optional second upload must drive node 81, with a safe fallback."""
 
         workflow = self.app.workflows["image-to-image"]
         first = self.app.store.create_upload("scene.png", "image/png", [b"scene"])
@@ -338,7 +362,7 @@ class BridgeHttpTest(unittest.TestCase):
             def history(self, prompt_id: str) -> dict[str, object]:
                 return {
                     "outputs": {
-                        "17": {
+                        "94": {
                             "images": [{"filename": "generated.png", "type": "output"}],
                         }
                     }
@@ -377,8 +401,7 @@ class BridgeHttpTest(unittest.TestCase):
                 "storedFile": upload["storedFile"],
             }
 
-        # The fallback role should populate the second LoadImage node with the
-        # first upload, keeping old one-image callers fully compatible.
+        # A one-image request populates both independent reference branches.
         one_client = RecordingComfy()
         self.app.comfy = one_client  # type: ignore[assignment]
         one_job = make_job([normalized_upload(first, "referenceImage")], "one")
@@ -387,10 +410,10 @@ class BridgeHttpTest(unittest.TestCase):
         self.assertIsNotNone(one_client.prompt)
         one_prompt = one_client.prompt or {}
         self.assertEqual(
-            one_prompt["18"]["inputs"]["image"], one_prompt["21"]["inputs"]["image"]
+            one_prompt["76"]["inputs"]["image"], one_prompt["81"]["inputs"]["image"]
         )
-        self.assertEqual(one_prompt["24"]["inputs"]["samples1"], ["20", 0])
-        self.assertEqual(one_prompt["24"]["inputs"]["samples2"], ["23", 0])
+        self.assertEqual(one_prompt["92:112:117"]["class_type"], "ReferenceLatent")
+        self.assertEqual(one_prompt["92:84:120"]["class_type"], "ReferenceLatent")
 
         # Supplying both roles must preserve their order and avoid replacing
         # the second image with the fallback during the fan-out pass.
@@ -407,8 +430,8 @@ class BridgeHttpTest(unittest.TestCase):
         self.app._run_live_job(two_job, workflow)
         self.assertIsNotNone(two_client.prompt)
         two_prompt = two_client.prompt or {}
-        first_remote = two_prompt["18"]["inputs"]["image"]
-        second_remote = two_prompt["21"]["inputs"]["image"]
+        first_remote = two_prompt["76"]["inputs"]["image"]
+        second_remote = two_prompt["81"]["inputs"]["image"]
         self.assertNotEqual(first_remote, second_remote)
         self.assertEqual(len(two_client.uploaded), 2)
         self.assertTrue(first_remote.endswith(two_client.uploaded[0][1]))

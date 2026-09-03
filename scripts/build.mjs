@@ -10,6 +10,7 @@ const hostEntry = path.join(root, 'src', 'index.js')
 const comfyApiEntry = path.join(root, 'src', 'comfy-api.js')
 const comfyCoreEntry = path.join(root, 'src', 'comfy-core.js')
 const workbenchApiEntry = path.join(root, 'src', 'workbench-api.js')
+const videoAssemblyEntry = path.join(root, 'src', 'video-assembly.js')
 const workspaceCoreEntry = path.join(root, 'src', 'workspace-core.ts')
 
 await mkdir(lib, { recursive: true })
@@ -49,4 +50,5 @@ await Promise.all([
   readFile(comfyApiEntry, 'utf8').then(source => writeFile(path.join(lib, 'comfy-api.js'), source, 'utf8')),
   readFile(comfyCoreEntry, 'utf8').then(source => writeFile(path.join(lib, 'comfy-core.js'), source, 'utf8')),
   readFile(workbenchApiEntry, 'utf8').then(source => writeFile(path.join(lib, 'workbench-api.js'), source, 'utf8')),
+  readFile(videoAssemblyEntry, 'utf8').then(source => writeFile(path.join(lib, 'video-assembly.js'), source, 'utf8')),
 ])

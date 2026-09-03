@@ -115,7 +115,6 @@ const EMPTY_DESIGN: ShotDesign = {
   lastFramePrompt: "",
   lastFrameNegativePrompt: "",
   references: "",
-  videoPrompt: "",
   characterOverrides: [],
   status: "待生成",
 };

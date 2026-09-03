@@ -6573,3 +6573,285 @@ summary:focus-visible {
   color: var(--text-muted);
   margin-right: 6px;
 }
+
+/* The final cut is a list of shots, not another asset editor. Keep it quiet
+ * and scannable so the merge action remains the only prominent control. */
+.asset-studio-head.is-assembly-studio {
+  max-width: 1080px;
+}
+
+.assembly-page {
+  display: grid;
+  gap: 16px;
+  max-width: 1080px;
+  min-width: 0;
+}
+
+.assembly-page-heading {
+  align-items: flex-end;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding-bottom: 13px;
+}
+
+.assembly-page-heading .eyebrow {
+  margin: 0 0 3px;
+}
+
+.assembly-page-heading h3 {
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.assembly-page-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.assembly-page-actions .submit-button,
+.assembly-page-actions .text-button {
+  min-height: 32px;
+}
+
+.assembly-shot-list {
+  border-top: 1px solid var(--border);
+  display: grid;
+}
+
+.assembly-shot-row {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 28px minmax(150px, 1fr) minmax(200px, 320px) minmax(120px, .7fr);
+  min-width: 0;
+  padding: 12px 0;
+}
+
+.assembly-shot-row.is-missing {
+  color: var(--text-muted);
+}
+
+.assembly-shot-index {
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .04em;
+}
+
+.assembly-shot-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.assembly-shot-copy strong,
+.assembly-shot-copy span,
+.assembly-shot-choice span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assembly-shot-copy strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.assembly-shot-copy span {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.assembly-shot-preview {
+  aspect-ratio: 16 / 9;
+  background: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: block;
+  max-height: 180px;
+  min-width: 0;
+  object-fit: contain;
+  width: 100%;
+}
+
+.assembly-shot-missing {
+  align-items: center;
+  aspect-ratio: 16 / 9;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  display: flex;
+  font-size: 11px;
+  justify-content: center;
+  max-height: 180px;
+  min-width: 0;
+}
+
+.assembly-shot-choice {
+  min-width: 0;
+}
+
+.assembly-shot-choice select {
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 11px;
+  height: 31px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0 7px;
+  width: 100%;
+}
+
+.assembly-shot-choice > span {
+  color: var(--text-muted);
+  display: block;
+  font-size: 11px;
+}
+
+.assembly-error,
+.assembly-empty,
+.assembly-missing-count {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.assembly-error {
+  border-left: 2px solid var(--border-strong);
+  padding: 4px 0 4px 10px;
+}
+
+.assembly-empty {
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
+  padding: 24px 14px;
+  text-align: center;
+}
+
+.assembly-missing-count {
+  margin: -5px 0 0;
+}
+
+.assembly-history {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 10px;
+  padding-top: 16px;
+}
+
+.assembly-history-heading {
+  align-items: baseline;
+  display: flex;
+  gap: 7px;
+}
+
+.assembly-history-heading strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.assembly-history-heading small {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.assembly-history-list {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+}
+
+.assembly-history-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  overflow: hidden;
+  padding-bottom: 8px;
+}
+
+.assembly-history-item video {
+  aspect-ratio: 16 / 9;
+  background: var(--ink);
+  display: block;
+  object-fit: contain;
+  width: 100%;
+}
+
+.assembly-history-item > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 0 9px;
+}
+
+.assembly-history-item strong,
+.assembly-history-item small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assembly-history-item strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.assembly-history-item small {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+@media (max-width: 860px) {
+  .assembly-shot-row {
+    grid-template-columns: 28px minmax(130px, 1fr) minmax(180px, 260px);
+  }
+
+  .assembly-shot-choice {
+    grid-column: 2 / -1;
+  }
+}
+
+@media (max-width: 560px) {
+  .assembly-page-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .assembly-page-actions {
+    width: 100%;
+  }
+
+  .assembly-page-actions .submit-button {
+    flex: 1;
+  }
+
+  .assembly-shot-row {
+    align-items: start;
+    grid-template-columns: 24px minmax(0, 1fr);
+    row-gap: 9px;
+  }
+
+  .assembly-shot-preview,
+  .assembly-shot-missing {
+    grid-column: 2;
+    max-height: none;
+    width: min(100%, 360px);
+  }
+
+  .assembly-shot-choice {
+    grid-column: 2;
+  }
+}

@@ -6,10 +6,10 @@ Workbench. It is intended to run on the same cloud server as ComfyUI.
 When a workflow declares image inputs, the workbench uploads the selected local
 assets, submits a fixed workflow preset, polls the job, then downloads only the
 files recorded for that job. The `image-generate` workflow is prompt-only and
-does not upload any image. The separate `image-to-image` workflow uploads one or two
-explicitly selected reference images for first/last-frame and scene image
-generation. With one image, the graph reuses it for both latent inputs; with
-two images, it blends the two encoded latents. The H3 video workflow uploads
+does not upload any image. The separate `image-to-image` workflow runs FLUX.2
+Klein 4B with one or two explicitly selected reference images for first/last-frame
+and scene image generation. Each reference uses an independent `ReferenceLatent`
+conditioning path; the graph does not blend images or latents. The H3 video workflow uploads
 the selected first and last frames to its two
 `LoadImage` nodes, then downloads the final `SaveVideo` output.
 The bridge does **not** expose ComfyUI directly to a browser and does not accept
@@ -164,9 +164,10 @@ job instead of queuing a duplicate submission.
 The exact accepted input names and upload roles come from `GET /workflows`.
 The current `image-generate` graph accepts `prompt`, `negativePrompt`, `width`,
 `height`, and `seed`; it is the user's prompt-only export and declares no image
-uploads. The current `image-to-image` graph accepts the same image inputs plus
-`denoise`, and requires one `referenceImage` upload; `referenceImage2` is
-optional and falls back to the first image. The current H3 video graph
+uploads. The FLUX.2 Klein 4B `image-to-image` graph accepts `prompt`, `width`,
+`height`, and `seed`, and requires one `referenceImage` upload; `referenceImage2`
+is optional and falls back to the first image. It has no negative-prompt or
+denoise input. The current H3 video graph
 accepts `prompt`, `seed`, and `durationSeconds`, and requires `firstFrame` plus
 `lastFrame` uploads. Its raw
 graph retains ownership of resolution, 24 fps output, and the `17k+5` frame
@@ -267,8 +268,8 @@ An optional second image and a fan-out input mapping can be declared like this:
 
 `targets` is an optional list on an input or upload mapping when the same value
 must be written to multiple ComfyUI fields. Every target must exist in the raw
-API graph. The shipped image-to-image graph uses ComfyUI's standard
-`LatentBlend` node; the target server must provide that node and the model/VAE
+API graph. The shipped FLUX.2 reference-generation graph uses ComfyUI's
+`ReferenceLatent` conditioning and requires the UNet, text encoder, and VAE
 files referenced by the raw export.
 
 The bridge injects only these declared fields. It uploads input images to the

@@ -412,7 +412,7 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       assetPath: shot.rootPath,
       presetId: 'shot-first-frame-img2img-v1',
       profileId: 'mock-cloud',
-      options: { width: '1280', height: '720', denoise: '0.6' },
+      options: { width: '1280', height: '720' },
     }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
     assert.equal(firstFrameImageToImage.status, 200)
     assert.equal(firstFrameImageToImage.payload.preview.errors.length, 0)
@@ -420,7 +420,7 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       { role: '首帧输入图', name: '场景图-01-已选.png' },
     ])
     assert.equal(firstFrameImageToImage.payload.preview.prompt, 'first-frame frontier establishing composition')
-    assert.equal(firstFrameImageToImage.payload.preview.negativePrompt, 'first-frame text')
+    assert.equal(firstFrameImageToImage.payload.preview.negativePrompt, '')
     assert.ok(firstFrameImageToImage.payload.preview.warnings.some(message => message.includes('场次已选场景图')))
 
     await withProjectRoot(root, async () => {
@@ -457,7 +457,7 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       assetPath: shot.rootPath,
       presetId: 'shot-first-frame-img2img-v1',
       profileId: 'mock-cloud',
-      options: { width: '1280', height: '720', denoise: '0.6' },
+      options: { width: '1280', height: '720' },
     }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
     assert.equal(locationFirstFrameImageToImage.status, 200)
     assert.equal(locationFirstFrameImageToImage.payload.preview.errors.length, 0)
@@ -486,7 +486,7 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       assetPath: shot.rootPath,
       presetId: 'shot-first-frame-img2img-v1',
       profileId: 'mock-cloud',
-      options: { width: '1280', height: '720', denoise: '0.6', referenceImagePath: sceneReference.path },
+      options: { width: '1280', height: '720', referenceImagePath: sceneReference.path },
     }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
     assert.equal(explicitFirstFrameImageToImage.status, 200)
     assert.equal(explicitFirstFrameImageToImage.payload.preview.errors.length, 0)
@@ -500,7 +500,7 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       assetPath: shot.rootPath,
       presetId: 'shot-first-frame-img2img-v1',
       profileId: 'mock-cloud',
-      options: { width: '1280', height: '720', denoise: '0.6', referenceImagePath: unselectedSceneReference.path },
+      options: { width: '1280', height: '720', referenceImagePath: unselectedSceneReference.path },
     }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
     assert.equal(unselectedReference.status, 200)
     assert.equal(unselectedReference.payload.preview.errors.length, 0)
@@ -513,7 +513,7 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       assetPath: shot.rootPath,
       presetId: 'shot-first-frame-img2img-v1',
       profileId: 'mock-cloud',
-      options: { width: '1280', height: '720', denoise: '0.6', referenceImagePath: unboundCharacterReference.path },
+      options: { width: '1280', height: '720', referenceImagePath: unboundCharacterReference.path },
     }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
     assert.equal(unboundCharacterPreview.status, 200)
     assert.equal(unboundCharacterPreview.payload.preview.errors.length, 0)
@@ -525,7 +525,7 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       assetPath: shot.rootPath,
       presetId: 'shot-last-frame-img2img-v1',
       profileId: 'mock-cloud',
-      options: { width: '1280', height: '720', denoise: '0.6' },
+      options: { width: '1280', height: '720' },
     }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
     assert.equal(lastFrameWithoutFirstFrame.status, 200)
     assert.equal(lastFrameWithoutFirstFrame.payload.preview.errors.length, 0)
@@ -572,7 +572,7 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       assetPath: shot.rootPath,
       presetId: 'shot-last-frame-img2img-v1',
       profileId: 'mock-cloud',
-      options: { width: '1280', height: '720', denoise: '0.55', referenceImagePath: propReference.path },
+      options: { width: '1280', height: '720', referenceImagePath: propReference.path },
     }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
     assert.equal(explicitLastFrameImageToImage.status, 200)
     assert.equal(explicitLastFrameImageToImage.payload.preview.errors.length, 0)
@@ -586,14 +586,14 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       assetPath: shot.rootPath,
       presetId: 'shot-last-frame-img2img-v1',
       profileId: 'mock-cloud',
-      options: { width: '1280', height: '720', denoise: '0.55' },
+      options: { width: '1280', height: '720' },
     }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
     assert.equal(lastFrameImageToImage.status, 200)
     assert.equal(lastFrameImageToImage.payload.preview.errors.length, 0)
     assert.equal(lastFrameImageToImage.payload.preview.attachments.length, 2)
     assert.notEqual(lastFrameImageToImage.payload.preview.attachments[0].name, '首帧-01-已选.png')
     assert.equal(lastFrameImageToImage.payload.preview.prompt, 'last-frame frontier resolved composition')
-    assert.equal(lastFrameImageToImage.payload.preview.negativePrompt, 'last-frame text')
+    assert.equal(lastFrameImageToImage.payload.preview.negativePrompt, '')
 
     await withProjectRoot(root, () => updateSceneCastBindings(scene.rootPath, [
       { characterPath: character.rootPath, state: '站立', continuity: '同场', startShotId: 'SH001', endShotId: 'SH001' },
@@ -615,7 +615,6 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       options: {
         width: '1280',
         height: '720',
-        denoise: '0.55',
         referenceImages: [
           // Deliberately send a person first. The server must preserve the
           // caller's order instead of forcing the first frame into slot one.
@@ -642,7 +641,6 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       options: {
         width: '1280',
         height: '720',
-        denoise: '0.6',
         referenceImages: [
           { path: sceneReference.path, role: 'referenceImage' },
           { path: unboundCharacterReference.path, role: 'referenceImage2' },
@@ -667,7 +665,6 @@ test('ComfyUI API keeps tokens private, checks first/last frames, and archives i
       options: {
         width: '1536',
         height: '864',
-        denoise: '0.65',
         referenceImages: [
           { path: sceneReference.path, role: 'referenceImage' },
           { path: unboundCharacterReference.path, role: 'referenceImage2' },
@@ -823,7 +820,7 @@ test('ComfyUI API falls back to the identity reference when a bound look has no 
       assetPath: paths.shotPath,
       presetId: 'shot-first-frame-img2img-v1',
       profileId: 'mock-cloud',
-      options: { width: '1280', height: '720', denoise: '0.6' },
+      options: { width: '1280', height: '720' },
     }
     const automatic = await call(api, jsonRequest(baseBody), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
     assert.equal(automatic.status, 200)
@@ -903,7 +900,6 @@ test('explicit frame references can upload an ordinary project image without cha
       options: {
         width: '1280',
         height: '720',
-        denoise: '0.6',
         referenceImagePath: reference.path,
       },
     }
@@ -924,6 +920,16 @@ test('explicit frame references can upload an ordinary project image without cha
     assert.equal(bridge.received.uploads[0].name, '普通候选.png')
     assert.equal(bridge.received.jobs.length, 1)
     assert.deepEqual(bridge.received.jobs[0].uploads.map(item => item.role), ['referenceImage'])
+    assert.equal('negativePrompt' in bridge.received.jobs[0].inputs, false)
+    assert.equal('denoise' in bridge.received.jobs[0].inputs, false)
+
+    const unsupportedNegativePrompt = await call(api, jsonRequest({
+      ...body,
+      prompt: 'reference generation prompt',
+      negativePrompt: 'unsupported negative prompt',
+    }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
+    assert.equal(unsupportedNegativePrompt.status, 400)
+    assert.match(unsupportedNegativePrompt.payload.error, /不支持临时负面提示词/u)
   } finally {
     await bridge.close()
     await rm(temporary, { recursive: true, force: true })
@@ -1691,7 +1697,7 @@ test('ComfyUI text-to-image ignores manually duplicated selected images', async 
       options: { ...body.options, useReferenceImages: true },
     }), 'http://127.0.0.1/ai-drama/workbench/comfy/jobs/preview')
     assert.equal(unsupportedReferenceMode.status, 400)
-    assert.match(unsupportedReferenceMode.payload.error, /暂不支持图生图/u)
+    assert.match(unsupportedReferenceMode.payload.error, /暂不支持参考生图/u)
     assert.equal(bridge.received.jobs.length, 1)
   } finally {
     await bridge.close()

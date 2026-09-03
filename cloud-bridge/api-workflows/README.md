@@ -1,8 +1,8 @@
 # Raw ComfyUI API Exports
 
 These files are for Bridge execution, not for drag-and-drop display in the
-ComfyUI canvas. To inspect or edit the Z-Image image-to-image graph visually,
-drag `../comfyui-workflows/z-image-turbo-image-to-image.json` into ComfyUI.
+ComfyUI canvas. To inspect or edit the FLUX.2 Klein 4B reference-generation graph
+visually, drag `../comfyui-workflows/flux2-klein-4b-multi-reference.json` into ComfyUI.
 Files in `../workflows/` are Bridge contracts and also cannot be displayed as
 canvas workflows.
 
@@ -21,22 +21,21 @@ api-workflows/image-generate.api.json
 workflows/image-generate.json
 ```
 
-For the Z-Image Turbo image-to-image workflow used by first/last-frame image
-generation:
+For the FLUX.2 Klein 4B reference-generation workflow used by scene and
+first/last-frame image generation:
 
 ```text
 api-workflows/image-to-image.api.json
 workflows/image-to-image.json
 ```
 
-The Bridge injects the base image into `LoadImage` node `18` and an optional
-second image into node `21`. When only one image is supplied, the contract
-copies it to node `21`; the two `VAEEncode` outputs are combined by standard
-ComfyUI `LatentBlend` node `24`. Width and height target both `ImageScale`
-nodes (`19` and `22`), while denoise and seed target `KSampler` node `6`. The
-graph follows ComfyUI's official `LoadImage -> VAEEncode -> KSampler`
-image-to-image pattern:
-https://comfyanonymous.github.io/ComfyUI_examples/img2img/
+The Bridge injects the first image into `LoadImage` node `76` and an optional
+second image into node `81`. When only one image is supplied, the contract
+copies it to node `81`. Each image is encoded separately and attached through
+its own `ReferenceLatent` conditioning path; the graph contains no `LatentBlend`.
+Prompt and seed target nodes `92:109` and `92:106`. Width and height target both
+`Flux2Scheduler` node `92:102` and `EmptyFlux2LatentImage` node `92:113`.
+The final image is downloaded only from `SaveImage` node `94`.
 
 For the current MiniMax H3 first/last-frame video workflow:
 

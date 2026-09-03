@@ -871,6 +871,7 @@ function parseStoryboardSectionDrafts(
       lastFramePrompt: detail ? readField(detail.fields, "尾帧提示词") : "",
       lastFrameNegativePrompt: detail ? readField(detail.fields, "尾帧负面提示词") : "",
       references: detail ? readField(detail.fields, "参考人物", "参考角色") : "",
+      videoPrompt: detail ? readField(detail.fields, "视频生成提示词") : "",
       status: "待创建镜头资产",
     };
     const warnings: string[] = [];
@@ -971,6 +972,7 @@ function parseStoredShotDesign(
     lastFramePrompt: readMarkdownSection(markdown, "尾帧提示词"),
     lastFrameNegativePrompt: readMarkdownSection(markdown, "尾帧负面提示词"),
     references: readField(fields, "参考人物", "参考角色"),
+    videoPrompt: readMarkdownSection(markdown, "视频生成提示词"),
     characterOverrides: parseShotCharacterOverrides(markdown),
     status: readField(fields, "状态") || "待生成",
   };
@@ -2876,6 +2878,10 @@ function serializeShotDesign(input: ShotDesign, existingMarkdown?: string, sourc
     "## 尾帧负面提示词",
     "",
     design.lastFrameNegativePrompt,
+    "",
+    "## 视频生成提示词",
+    "",
+    design.videoPrompt,
     "",
     ...serializeShotCharacterOverrides(design.characterOverrides ?? []),
     "",

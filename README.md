@@ -14,7 +14,8 @@
 - 删除资产或资料后可在工作台右上角“回收站”查看并恢复；恢复只会回到原项目路径，若已有同名文件则拒绝覆盖。
 - Harness 内的 AI 可调用 `ai_drama_inspect`、`ai_drama_stage_proposal`、`ai_drama_get_proposal`、`ai_drama_apply_proposal`、`ai_drama_discard_proposal`。
 - AI 的拆解先暂存；只有用户输入精确的“确认写入 `<proposal_id>`”后，才会以可回滚事务创建真实目录和 Markdown。
-- 工作台中的人物、场景、道具和基础镜头图片默认是纯文生图：只读取当前已保存的 Markdown，不会因为资料槽存在 `-已选` 图片就自动上传。镜头首帧/尾帧另有明确的图生图预设：可在生成窗口从镜头、场景、道具和项目人物图片中选择一到两张参考图。视频工作流仍会按要求读取已选首帧和尾帧。任务通过本机服务安全提交到云端 Comfy Bridge；结果会自动格式化并归档到对应资料槽，绝不覆盖现有定稿。
+- 工作台中的人物、场景、道具和基础镜头图片默认是纯文生图：只读取当前已保存的 Markdown，不会因为资料槽存在 `-已选` 图片就自动上传。镜头首帧/尾帧另有明确的 FLUX.2 参考生图预设：可在生成窗口从镜头、场景、道具和项目人物图片中选择一到两张参考图。两张图分别进入独立的 `ReferenceLatent` 条件链，不会做图层或 latent 混合。视频工作流仍会按要求读取已选首帧和尾帧。任务通过本机服务安全提交到云端 Comfy Bridge；结果会自动格式化并归档到对应资料槽，绝不覆盖现有定稿。
+- 所有镜头视频完成后，在左侧“分镜制作 > 成片”检查顺序、选择候选视频并点击“合并成片”；总片写入项目根目录的 `成片/`，已有总片不会被默认覆盖。
 
 ## 安装
 
@@ -88,7 +89,7 @@ ai-play-test/
 
 ### 1. 准备云端 Bridge
 
-把本插件的 `cloud-bridge/` 目录复制到 **与 ComfyUI 同一台服务器**。按其中的 [部署说明](cloud-bridge/README.md) 启动；首次请保持 `COMFY_BRIDGE_MODE=mock`，确认连通后再替换真实工作流并改为 `live`。文生图使用 `image-generate`，图生图使用 `image-to-image`：原始 ComfyUI API 导出分别位于 `cloud-bridge/api-workflows/`，`cloud-bridge/workflows/` 中的同名文件只保存节点映射，不要把两者合并。
+把本插件的 `cloud-bridge/` 目录复制到 **与 ComfyUI 同一台服务器**。按其中的 [部署说明](cloud-bridge/README.md) 启动；首次请保持 `COMFY_BRIDGE_MODE=mock`，确认连通后再替换真实工作流并改为 `live`。文生图使用 `image-generate`，参考生图使用 `image-to-image`：原始 ComfyUI API 导出分别位于 `cloud-bridge/api-workflows/`，`cloud-bridge/workflows/` 中的同名文件只保存节点映射，不要把两者合并。
 
 Bridge 默认只监听服务器回环地址。建议使用 HTTPS 反向代理、Tailscale，或 SSH 隧道把它安全地提供给本机工作台；不要把 ComfyUI 的 `8188` 端口直接暴露到公网。
 
@@ -145,14 +146,14 @@ Bridge 默认只监听服务器回环地址。建议使用 HTTPS 反向代理、
 ### 3. 在工作台生成
 
 1. 先保存人物、场景、道具或镜头 Markdown；生成只使用磁盘中已保存的内容。
-2. 在镜头的“画面参考”点击“生成场景图”，会创建或复用项目级 `场景/<场次名>/`，自动关联当前场次，并把结果归档到该场景资产的 `场景图/`。弹窗支持文生图或图生图；图生图可从当前镜头可用的场景、道具和项目人物图片中选择参考。
-3. 生成图生图首帧或尾帧时，可选择最多两张镜头、场景、道具或项目人物图片（例如人物 + 场景）；不选参考图时使用文生图。尾帧不要求绑定首帧，首帧只是可选参考图之一。
+2. 在镜头的“画面参考”点击“生成场景图”，会创建或复用项目级 `场景/<场次名>/`，自动关联当前场次，并把结果归档到该场景资产的 `场景图/`。弹窗支持文生图或参考生图；参考生图可从当前镜头可用的场景、道具和项目人物图片中选择参考。
+3. 生成参考生图首帧或尾帧时，可选择最多两张镜头、场景、道具或项目人物图片（例如人物 + 场景）；不选参考图时使用文生图。尾帧不要求绑定首帧，首帧只是可选参考图之一。
 4. H3 首尾帧视频需要在镜头的首帧和尾帧资料槽中各设一张为 `-已选`。选中资产后点击右上“生成”，选择服务器与固定预设，再点击“生成视频”。
 5. 人物三视图/定妆、场景图、道具参考图、镜头候选、首帧、尾帧和 H3 视频都会进入各自资料槽；图片任务的提示词可在生成弹窗中直接修改，不会自动标为已选或覆盖定稿。
 
-图片任务的生成弹窗会显示提示词和负面提示词，可在提交前临时修改；修改只影响本次任务，不回写人物、场景、道具或镜头 Markdown。图生视频仍只读取已保存的镜头资料。
+图片任务的生成弹窗会显示当前工作流实际支持的提示词参数，可在提交前临时修改；修改只影响本次任务，不回写人物、场景、道具或镜头 Markdown。FLUX.2 参考生图不支持独立负面提示词，因此不会显示或提交该字段；图生视频仍只读取已保存的镜头资料。
 
-需要拖入 ComfyUI 画布时，请使用 `cloud-bridge/comfyui-workflows/z-image-turbo-image-to-image.json`。Bridge 实际执行的是 `cloud-bridge/api-workflows/image-to-image.api.json`，并由 `cloud-bridge/workflows/image-to-image.json` 声明允许替换的节点字段；后两者都不是画布文件，不能拖入 ComfyUI。三个文件沿用当前 Z-Image Turbo 模型，并使用 `LoadImage`、`ImageScale`、`VAEEncode`、`LatentBlend`、`KSampler`、`VAEDecode` 节点。单图时第二路复用第一张，双图时由 `LatentBlend` 混合两路 latent；目标 ComfyUI 需要提供该节点。ComfyUI 官方的通用图生图节点连接方式可在 [Image-to-Image 官方示例](https://comfyanonymous.github.io/ComfyUI_examples/img2img/) 查看；官方示例使用 SD1.5，仅用于理解节点连接，不应直接替换本项目的 Z-Image 模型文件。
+需要拖入 ComfyUI 画布时，请使用 `cloud-bridge/comfyui-workflows/flux2-klein-4b-multi-reference.json`。Bridge 实际执行的是 `cloud-bridge/api-workflows/image-to-image.api.json`，并由 `cloud-bridge/workflows/image-to-image.json` 声明允许替换的节点字段；后两者都不是画布文件，不能拖入 ComfyUI。当前工作流使用 `flux-2-klein-4b/flux-2-klein-4b.safetensors`、`qwen_3_4b.safetensors` 和 `flux2-vae.safetensors`。参考图分别经 `VAEEncode` 进入独立的 `ReferenceLatent` 条件链，不包含 `LatentBlend`；只传一张图时，Bridge 会将它安全复用到第二参考输入。
 
 `H3 首尾帧视频` 会严格要求镜头的首帧和尾帧都已标为 `-已选`。任务开始前会再次校验这些已选文件仍然存在，避免排队期间换图却误用旧参考。任务状态和归档结果会显示在同一生成弹窗内；失败或取消的任务不支持重试，需要重新生成，尚未提交到云端的排队任务可点“取消排队”。任务记录保存在项目的隐藏目录 `.workbench/jobs/`，不会出现在资产列表中。
 
@@ -164,7 +165,7 @@ H3 的生成弹窗填写“时长（秒）”。工作台只覆盖 raw API 工�
 
 - “移入回收站”不会直接删除文件。每个新移入的项目会记录其原始相对路径；点击右上角“回收站”可查看并恢复。
 - 恢复不会覆盖任何现有文件。若先恢复了资料、后恢复其所属人物或镜头导致上级目录不存在，先恢复上级资产即可。
-- `-已选` 是文件名中的持久选择状态。请通过“设为参考 / 统一选此图”切换，而不是手动复制定稿；图生图生成窗口可直接选择项目内图片，视频工作流仍只读取已选首尾帧，纯文生图不会上传资料槽图片。
+- `-已选` 是文件名中的持久选择状态。请通过“设为参考 / 统一选此图”切换，而不是手动复制定稿；参考生图窗口可直接选择项目内图片，视频工作流仍只读取已选首尾帧，纯文生图不会上传资料槽图片。
 
 ## 分发给其他人
 
