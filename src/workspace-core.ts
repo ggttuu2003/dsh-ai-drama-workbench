@@ -43,6 +43,8 @@ const DEFAULT_PROJECT_ID = "my-first-01";
 const HIDDEN_DIRECTORIES = new Set([".git", "node_modules", ".next", ".workbench"]);
 const PROJECT_INDEX_PATH = ".workbench/index.json";
 const PROJECT_JSON_PATH = ".workbench/project.json";
+const PROJECT_SNAPSHOT_SCHEMA_VERSION = 3;
+const LEGACY_PROJECT_SNAPSHOT_SCHEMA_VERSIONS = new Set([1, 2]);
 const MAX_PROJECT_JSON_BYTES = 20 * 1024 * 1024;
 const MAX_PROJECT_INDEX_BYTES = 1024 * 1024;
 const MAX_TEXT_ASSET_BYTES = 2_000_000;
@@ -52,6 +54,11 @@ const TRASH_METADATA_FILE = ".workbench-trash.json";
 const TRASH_ENTRY_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const CHARACTER_LOOK_DIRECTORY = "造型";
 const CHARACTER_LOOK_DOCUMENT = "造型设定.md";
+const CHARACTER_PROFILE_JSON = "角色设定.json";
+const CHARACTER_LOOK_JSON = "造型设定.json";
+const LOCATION_PROFILE_JSON = "场景设定.json";
+const PROP_PROFILE_JSON = "道具设定.json";
+const SCENE_DOCUMENT_JSON = "场次.json";
 const SCENE_CAST_DOCUMENT = "出场与造型表.md";
 const SCENE_CAST_MARKER_START = "<!-- workbench:scene-cast:start -->";
 const SCENE_CAST_MARKER_END = "<!-- workbench:scene-cast:end -->";
@@ -64,6 +71,7 @@ const SCENE_ASSET_BINDINGS_PROJECTION_MARKER_START = "<!-- workbench:scene-asset
 const SCENE_ASSET_BINDINGS_PROJECTION_MARKER_END = "<!-- workbench:scene-assets:projection:end -->";
 const SHOT_CHARACTER_OVERRIDES_MARKER_START = "<!-- workbench:shot-character-overrides:start -->";
 const SHOT_CHARACTER_OVERRIDES_MARKER_END = "<!-- workbench:shot-character-overrides:end -->";
+const DOCUMENT_SIDECAR_VERSION = 1;
 const DEFAULT_CHARACTER_ROLE_CATEGORY: CharacterRoleCategory = "待分类";
 const CHARACTER_ROLE_SORT_ORDER: readonly CharacterRoleCategory[] = [
   "主角",
@@ -78,9 +86,8 @@ const CHARACTER_ROLE_SORT_ORDER: readonly CharacterRoleCategory[] = [
 
 const CHARACTER_SLOT_DEFINITIONS = [
   { key: "turnaround", label: "三视图", directory: "三视图" },
-  { key: "costume", label: "定妆", directory: "定妆" },
-  { key: "reference", label: "参考图", directory: "参考图" },
 ] as const;
+const LEGACY_CHARACTER_SLOT_DIRECTORIES = new Set(["参考图", "定妆"]);
 
 const SHOT_SLOT_DEFINITIONS = [
   { key: "reference", label: "参考图", directory: "参考图" },
@@ -93,14 +100,10 @@ const SHOT_SLOT_DEFINITIONS = [
 
 // A scene is the large storyboard container above individual shot folders.
 const SCENE_SLOT_DEFINITIONS = [
-  { key: "setting", label: "场景图", directory: "场景图" },
-  { key: "reference", label: "参考图", directory: "参考图" },
-  { key: "firstFrame", label: "首帧", directory: "首帧" },
-  { key: "lastFrame", label: "尾帧", directory: "尾帧" },
   { key: "candidate", label: "候选", directory: "候选" },
   { key: "final", label: "定稿", directory: "定稿" },
-  { key: "video", label: "成片", directory: "成片" },
 ] as const;
+const LEGACY_SCENE_SLOT_DIRECTORIES = new Set(["场景图", "参考图", "首帧", "尾帧", "成片"]);
 
 const LOCATION_SLOT_DEFINITIONS = [
   { key: "setting", label: "场景图", directory: "场景图" },
@@ -344,6 +347,16 @@ async function scanVisibleProject(root: string): Promise<ProjectIndex> {
   const directories: IndexedEntry[] = [];
   const files: IndexedEntry[] = [];
 
+  function isLegacySlotDirectory(parent: string, name: string): boolean {
+    const parentSegments = makeRelative(root, parent).split("/").filter(Boolean);
+    if (
+      LEGACY_CHARACTER_SLOT_DIRECTORIES.has(name)
+      && parentSegments[0] === "主要人物"
+      && (parentSegments.length === 2 || (parentSegments.length === 4 && parentSegments[2] === "造型"))
+    ) return true;
+    return LEGACY_SCENE_SLOT_DIRECTORIES.has(name) && parentSegments[0] === "分镜" && parentSegments.length === 2;
+  }
+
   async function visit(absoluteDirectory: string): Promise<void> {
     const entries = await fs.readdir(absoluteDirectory, { withFileTypes: true });
     entries.sort((left, right) => left.name.localeCompare(right.name, "zh-Hans-CN"));
@@ -354,6 +367,7 @@ async function scanVisibleProject(root: string): Promise<ProjectIndex> {
       const stats: Stats = await fs.lstat(absolutePath);
       // Assets never follow links, even when a link happens to point back inside the library.
       if (stats.isSymbolicLink()) continue;
+      if (stats.isDirectory() && isLegacySlotDirectory(absoluteDirectory, entry.name)) continue;
 
       const indexedEntry: IndexedEntry = {
         absolutePath,
@@ -530,9 +544,9 @@ async function buildCharacterLooks(
   const lookDirectories = index.directories.filter((directory) => path.dirname(directory.absolutePath) === lookRoot);
 
   const looks = await Promise.all(lookDirectories.map(async (directory) => {
-    const document = (index.filesByDirectory.get(directory.absolutePath) ?? [])
-      .find((file) => file.name === CHARACTER_LOOK_DOCUMENT);
-    const documentContent = document ? await readIndexedText(document) : "";
+    const pairedDocument = await readPairedDocument(index, directory, CHARACTER_LOOK_DOCUMENT, CHARACTER_LOOK_JSON, "look");
+    const document = pairedDocument.markdown;
+    const documentContent = pairedDocument.content;
     const slots = readAssetSlots(directory.absolutePath, CHARACTER_SLOT_DEFINITIONS, index.filesByDirectory);
     const { confirmedVisuals, confirmedVisualSourcePaths } = getConfirmedVisualMetadata(slots);
     const slotFiles = slots.flatMap((slot) => slot.files.map((file) =>
@@ -546,14 +560,15 @@ async function buildCharacterLooks(
       id: parsedName.id,
       name: parsedName.name,
       ...(document ? { documentPath: document.relativePath, documentContent } : {}),
+      ...(pairedDocument.json ? { documentJsonPath: pairedDocument.json.relativePath } : {}),
+      ...(pairedDocument.prompt ? { prompt: pairedDocument.prompt } : {}),
+      ...(pairedDocument.negativePrompt ? { negativePrompt: pairedDocument.negativePrompt } : {}),
       documentRevision: createTextRevision(documentContent),
       slots,
       confirmedVisuals,
       confirmedVisualSourcePaths,
       cover: confirmedVisuals.turnaround
-        ?? confirmedVisuals.costume
-        ?? confirmedVisuals.reference
-        ?? pickCover(slots, ["turnaround", "costume", "reference"]),
+        ?? pickCover(slots, ["turnaround"]),
       updatedAt: latestUpdatedAt(directory, [...(document ? [document] : []), ...slotFiles]),
     } satisfies CharacterLook;
   }));
@@ -646,7 +661,7 @@ function splitStoryboardSceneSections(source: IndexedEntry, markdown: string): S
 function parseBoldFields(markdown: string): Map<string, string> {
   const fields = new Map<string, string>();
   for (const line of markdown.split(/\r?\n/)) {
-    const match = line.match(/^\s*-\s+\*\*([^*]+?)[：:]\*\*\s*(.*?)\s*$/u);
+    const match = line.match(/^\s*-\s+\*\*([^*]+?)(?:[：:]\*\*|\*\*\s*[：:])\s*(.*?)\s*$/u);
     if (match) fields.set(match[1].trim(), match[2].trim());
   }
   return fields;
@@ -714,13 +729,500 @@ function escapeRegExp(value: string): string {
 }
 
 function readMarkdownSection(markdown: string, heading: string): string {
-  const pattern = new RegExp(`^##\\s+${escapeRegExp(heading)}\\s*$`, "mu");
-  const match = pattern.exec(markdown);
-  if (!match || match.index === undefined) return "";
-  const contentStart = match.index + match[0].length;
-  const remainder = markdown.slice(contentStart);
-  const nextHeading = /^##\s+/mu.exec(remainder);
-  return remainder.slice(0, nextHeading?.index ?? remainder.length).trim();
+  const normalizeTitle = (value: string): string => value
+    .trim()
+    .replace(/\s+/gu, " ")
+    .replace(/\s*#+\s*$/u, "")
+    .replace(/\s*\{#[^}]+[}]\s*$/u, "")
+    .replace(/[：:]\s*$/u, "")
+    .toLocaleLowerCase("zh-Hans-CN");
+  const expected = normalizeTitle(heading);
+  if (!expected) return "";
+  const lines = String(markdown ?? "").replace(/\r\n?/gu, "\n").split("\n");
+  let start = -1;
+  let level = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(/^(#{2,6})\s+(.+?)\s*#?\s*$/u);
+    if (!match) continue;
+    const title = normalizeTitle(match[2]);
+    if (title === expected) {
+      start = index + 1;
+      level = match[1].length;
+      break;
+    }
+  }
+  if (start < 0) return "";
+  let end = lines.length;
+  for (let index = start; index < lines.length; index += 1) {
+    const match = lines[index].match(/^(#{1,6})\s+.+?\s*#?\s*$/u);
+    if (match && match[1].length <= level) {
+      end = index;
+      break;
+    }
+  }
+  return lines.slice(start, end).join("\n").trim();
+}
+
+/**
+ * Prompt fields are parsed separately from the rest of an asset document.
+ * A profile contains identity notes and production metadata that must never
+ * be sent to an image workflow as if it were a visual instruction.
+ */
+const TURNAROUND_PROMPT_HEADINGS = [
+  "三视图提示词",
+  "人物三视图提示词",
+  "角色三视图提示词",
+  "身份三视图提示词",
+  "视觉提示词",
+  "人物视觉提示词",
+  "提示词",
+  "turnaround_prompt",
+  "turnaround prompt",
+  "character_turnaround_prompt",
+  "character turnaround prompt",
+];
+const TURNAROUND_NEGATIVE_HEADINGS = [
+  "三视图负面提示词",
+  "人物三视图负面提示词",
+  "角色三视图负面提示词",
+  "身份三视图负面提示词",
+  "视觉负面提示词",
+  "负面提示词",
+  "turnaround_negative_prompt",
+  "turnaround negative prompt",
+  "character_turnaround_negative_prompt",
+  "character turnaround negative prompt",
+];
+const LOOK_PROMPT_HEADINGS = [
+  "造型图提示词",
+  "人物造型图提示词",
+  "定妆图提示词",
+  "造型提示词",
+  // Newer projects keep every character visual in the same 三视图 slot.
+  // Accept that label on LOOK documents while retaining the older name.
+  "三视图提示词",
+  "costume_prompt",
+  "costume prompt",
+  "look_prompt",
+  "look prompt",
+];
+const LOOK_NEGATIVE_HEADINGS = [
+  "造型图负面提示词",
+  "人物造型图负面提示词",
+  "定妆图负面提示词",
+  "造型负面提示词",
+  "三视图负面提示词",
+  "负面提示词",
+  "costume_negative_prompt",
+  "costume negative prompt",
+  "look_negative_prompt",
+  "look negative prompt",
+];
+
+const PROMPT_METADATA_PREFIXES = [
+  "提案来源",
+  "制作备注",
+  "旧资料槽兼容",
+  "人物根目录",
+  "适用剧情",
+  "造型编号",
+  "造型名称",
+  "角色分类",
+  "人物分类",
+];
+const PROMPT_METADATA_LINE_PATTERN = new RegExp(
+  `^(?:${[
+    ...PROMPT_METADATA_PREFIXES,
+    "人物",
+    "角色",
+    "状态",
+    "说明",
+    "用途",
+    "地点",
+  ].map(escapeRegExp).join("|")})\\s*(?:[：:]|$)`,
+  "u",
+);
+const VISUAL_FIELD_PREFIXES = [
+  // Prompt sections are sometimes authored as a labelled list item rather
+  // than as plain prose (for example `- **提示词：** ...`). Strip that
+  // wrapper before the value reaches the image workflow.
+  "提示词",
+  "负面提示词",
+  "turnaround_prompt",
+  "turnaround_negative_prompt",
+  "three_view_prompt",
+  "three_view_negative_prompt",
+  "visual_prompt",
+  "visual_negative_prompt",
+  "costume_prompt",
+  "costume_negative_prompt",
+  "身份基准说明",
+  "身份",
+  "外形",
+  "外貌",
+  "脸部特征",
+  "脸部",
+  "脸型",
+  "五官",
+  "眼睛",
+  "眼神",
+  "眉毛",
+  "发型",
+  "发色",
+  "体态",
+  "身材",
+  "体型",
+  "肤色",
+  "年龄",
+  "年龄感",
+  "性别",
+  "身高",
+  "可见标记",
+  "标志",
+  "伤痕",
+  "基础服饰",
+  "服饰",
+  "衣着",
+  "服装",
+  "妆发",
+  "固定道具",
+  "连续性",
+];
+
+function normalizePromptKey(value: string): string {
+  return value
+    .replace(/[\s_*`#-]/gu, "")
+    .replace(/[：:]/gu, "")
+    .toLocaleLowerCase("zh-Hans-CN");
+}
+
+function cleanPromptText(value: unknown, { dropMetadata = false } = {}): string {
+  if (typeof value !== "string") return "";
+  const lines = value.replace(/\r\n?/gu, "\n").split("\n");
+  const cleaned: string[] = [];
+  for (const rawLine of lines) {
+    let line = rawLine.trim();
+    if (!line || /^`{3,}(?:json)?\s*$/iu.test(line) || /^---+$/.test(line)) continue;
+    if (/^#{1,6}\s+/u.test(line)) continue;
+    line = line.replace(/^[-*+]\s+/u, "").replace(/^>\s*/u, "");
+    line = line.replace(/\*\*(.+?)\*\*/gu, "$1").replace(/__(.+?)__/gu, "$1");
+    line = line.replace(/`([^`]+)`/gu, "$1").trim();
+    if (!line) continue;
+    if (dropMetadata && PROMPT_METADATA_LINE_PATTERN.test(line)) continue;
+    if (dropMetadata && /^(?:请在这里补充|请描述|待补充|未补充|暂无)/u.test(line)) continue;
+    if (dropMetadata) {
+      const fieldPattern = new RegExp(`^(?:${VISUAL_FIELD_PREFIXES.map(escapeRegExp).join("|")})\\s*[：:]\\s*`, "u");
+      line = line.replace(fieldPattern, "").trim();
+      if (!line || /^(?:请在这里补充|请描述|待补充|未补充|暂无)/u.test(line)) continue;
+    }
+    cleaned.push(line);
+  }
+  return cleaned.join("；").replace(/；{2,}/gu, "；").trim();
+}
+
+function parseJsonPromptObjects(markdown: string): Record<string, unknown>[] {
+  const source = String(markdown ?? "");
+  const candidates = [source];
+  for (const match of source.matchAll(/```(?:json)?\s*\n?([\s\S]*?)```/giu)) {
+    candidates.unshift(match[1]);
+  }
+  const objects: Record<string, unknown>[] = [];
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    const record = value as Record<string, unknown>;
+    objects.push(record);
+    Object.values(record).forEach(visit);
+  };
+  for (const candidate of candidates) {
+    try {
+      visit(JSON.parse(candidate.trim()) as unknown);
+    } catch {
+      // Most profiles are Markdown, so non-JSON source is expected here.
+    }
+  }
+  return objects;
+}
+
+function readStructuredPromptValue(markdown: string, aliases: readonly string[]): string {
+  const expected = new Set(aliases.map(normalizePromptKey));
+  for (const record of parseJsonPromptObjects(markdown)) {
+    for (const [key, value] of Object.entries(record)) {
+      if (!expected.has(normalizePromptKey(key)) || typeof value !== "string") continue;
+      const prompt = cleanPromptText(value, { dropMetadata: true });
+      if (prompt) return prompt;
+    }
+  }
+  return "";
+}
+
+function readPromptFieldLine(markdown: string, aliases: readonly string[]): string {
+  const expected = new Set(aliases.map(normalizePromptKey));
+  // The planner and older hand-authored profiles commonly use
+  // `- **提示词：** value`, where the colon sits inside the bold marker.
+  for (const [key, value] of parseBoldFields(String(markdown ?? ""))) {
+    if (!expected.has(normalizePromptKey(key))) continue;
+    const prompt = cleanPromptText(value, { dropMetadata: true });
+    if (prompt) return prompt;
+  }
+  for (const rawLine of String(markdown ?? "").replace(/\r\n?/gu, "\n").split("\n")) {
+    const line = rawLine.trim().replace(/^[-*+]\s+/u, "");
+    const match = line.match(/^(?:\*\*|__)?([^：:]+?)(?:\*\*|__)?\s*[：:]\s*(.+?)\s*$/u);
+    if (!match || !expected.has(normalizePromptKey(match[1]))) continue;
+    const prompt = cleanPromptText(match[2], { dropMetadata: true });
+    if (prompt) return prompt;
+  }
+  return "";
+}
+
+function readMarkdownSectionAliases(markdown: string, headings: readonly string[]): string {
+  for (const heading of headings) {
+    const section = readMarkdownSection(markdown, heading);
+    if (section) return cleanPromptText(section, { dropMetadata: true });
+  }
+  return "";
+}
+
+function readPromptFields(
+  markdown: string,
+  promptHeadings: readonly string[],
+  negativeHeadings: readonly string[],
+  promptAliases: readonly string[],
+  negativeAliases: readonly string[],
+): { prompt: string; negativePrompt: string } {
+  const prompt = readMarkdownSectionAliases(markdown, promptHeadings)
+    || readStructuredPromptValue(markdown, promptAliases)
+    || readPromptFieldLine(markdown, promptAliases);
+  const negativePrompt = readMarkdownSectionAliases(markdown, negativeHeadings)
+    || readStructuredPromptValue(markdown, negativeAliases)
+    || readPromptFieldLine(markdown, negativeAliases);
+  return { prompt, negativePrompt };
+}
+
+export function readCharacterTurnaroundPromptFields(markdown: string): {
+  prompt: string;
+  negativePrompt: string;
+} {
+  return readPromptFields(
+    markdown,
+    TURNAROUND_PROMPT_HEADINGS,
+    TURNAROUND_NEGATIVE_HEADINGS,
+    [
+      "turnaround_prompt",
+      "turnaroundPrompt",
+      "three_view_prompt",
+      "threeViewPrompt",
+      "visual_prompt",
+      "visualPrompt",
+      "prompt",
+      "视觉提示词",
+      "人物三视图提示词",
+      "三视图提示词",
+    ],
+    [
+      "turnaround_negative_prompt",
+      "turnaroundNegativePrompt",
+      "visual_negative_prompt",
+      "visualNegativePrompt",
+      "negative_prompt",
+      "negativePrompt",
+      "视觉负面提示词",
+      "人物三视图负面提示词",
+      "三视图负面提示词",
+      "负面提示词",
+    ],
+  );
+}
+
+export function readCharacterLookPromptFields(markdown: string): {
+  prompt: string;
+  negativePrompt: string;
+} {
+  return readPromptFields(
+    markdown,
+    LOOK_PROMPT_HEADINGS,
+    LOOK_NEGATIVE_HEADINGS,
+    [
+      "prompt",
+      "costume_prompt",
+      "costumePrompt",
+      "visual_prompt",
+      "visualPrompt",
+      "视觉提示词",
+      "造型图提示词",
+      "造型提示词",
+      "三视图提示词",
+      "提示词",
+    ],
+    [
+      "negative_prompt",
+      "negativePrompt",
+      "costume_negative_prompt",
+      "costumeNegativePrompt",
+      "visual_negative_prompt",
+      "visualNegativePrompt",
+      "视觉负面提示词",
+      "造型图负面提示词",
+      "造型负面提示词",
+      "三视图负面提示词",
+      "负面提示词",
+    ],
+  );
+}
+
+function readVisualFields(fields: Map<string, string>, ...names: string[]): string {
+  const parts = names
+    .map((name) => cleanPromptText(fields.get(name) ?? "", { dropMetadata: true }))
+    .filter(Boolean);
+  return [...new Set(parts)].join("；");
+}
+
+function readVisualListSections(markdown: string, headings: readonly string[]): string {
+  const parts = headings
+    .map((heading) => readMarkdownSection(markdown, heading))
+    .map((section) => cleanPromptText(section, { dropMetadata: true }))
+    .flatMap((section) => section.split(/[；\n]/u))
+    .map((part) => part.trim())
+    .filter((part) => part && !/(?:提案|来源|出身|之孙|之子|正在修炼|剧情|编号|名称)/u.test(part));
+  return [...new Set(parts)].join("；");
+}
+
+function joinUniquePromptParts(parts: readonly string[]): string {
+  const values = parts
+    .flatMap((part) => part.split(/[；\n]/u))
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const unique: string[] = [];
+  const comparable = (value: string): string => value
+    .replace(/[\s，。；、：:的]/gu, "")
+    .toLocaleLowerCase("zh-Hans-CN");
+  for (const value of values) {
+    if (unique.some((existing) => existing === value)) continue;
+    // The structured profile often repeats a short trait in both the
+    // identity sentence and the lock list (for example "挺拔"). Keep the
+    // descriptive sentence and omit the redundant fragment.
+    const compactValue = comparable(value);
+    if (compactValue.length >= 2 && unique.some((existing) => {
+      const compactExisting = comparable(existing);
+      return compactExisting.length > compactValue.length && compactExisting.includes(compactValue);
+    })) {
+      continue;
+    }
+    for (let index = unique.length - 1; index >= 0; index -= 1) {
+      const compactExisting = comparable(unique[index]);
+      if (compactExisting.length >= 2 && compactValue.length > compactExisting.length && compactValue.includes(compactExisting)) {
+        unique.splice(index, 1);
+      }
+    }
+    unique.push(value);
+  }
+  return unique.join("；");
+}
+
+const VISUAL_IDENTITY_HINT_PATTERN = /(?:\d{1,3}\s*岁|少年|少女|青年|老人|男孩|女孩|男性|女性|面庞|脸|五官|眼|眉|鼻|发|头发|肤色|皮肤|身姿|身材|体态|身高|体型|服饰|服装|衣着|衣服|短发|长发|长袍|短衣)/u;
+
+function visualIdentityFallback(value: string): string {
+  return value
+    .split(/[，。；、]/u)
+    .map((part) => part.trim())
+    .filter((part) => part && VISUAL_IDENTITY_HINT_PATTERN.test(part))
+    .join("；");
+}
+
+function characterIdentityVisualCore(markdown: string): string {
+  const source = String(markdown ?? "");
+  const fields = parseBoldFields(source);
+  const structuredFields = readVisualFields(
+    fields,
+    "身份基准说明",
+    "外形",
+    "外貌",
+    "脸部特征",
+    "脸部",
+    "脸型",
+    "五官",
+    "眼睛",
+    "眼神",
+    "眉毛",
+    "发型",
+    "发色",
+    "体态",
+    "身材",
+    "体型",
+    "肤色",
+    "年龄",
+    "年龄感",
+    "性别",
+    "身高",
+    "可见标记",
+    "标志",
+    "伤痕",
+    "基础服饰",
+    "服饰",
+    "衣着",
+  );
+  const identityFallback = structuredFields
+    ? ""
+    : visualIdentityFallback(cleanPromptText(fields.get("身份") ?? "", { dropMetadata: true }));
+  const parts = [
+    structuredFields || identityFallback,
+    readVisualListSections(source, ["身份锁定特征", "身份锁定视觉特征", "视觉特征"]),
+    readVisualListSections(source, [
+      "基础呈现（不等同于 LOOK）",
+      "基础呈现",
+      "外形特征",
+      "外貌特征",
+      "视觉形象",
+      "视觉设定",
+      "人物外观",
+      "基础外观",
+    ]),
+  ].filter(Boolean);
+  return joinUniquePromptParts(parts);
+}
+
+function lookVisualCore(markdown: string): string {
+  const source = String(markdown ?? "");
+  const fields = parseBoldFields(source);
+  const parts = [
+    // Only visual fields belong in a static look image. The surrounding
+    // sections also contain names, IDs, story applicability and production
+    // notes, which must not leak into the prompt.
+    readVisualFields(fields, "服装", "妆发", "固定道具"),
+  ].filter(Boolean);
+  return joinUniquePromptParts(parts);
+}
+
+const TURNAROUND_LAYOUT_SUFFIX = "全身角色设计三视图，正面、侧面、背面三视角并列，中立站姿，统一比例和身份特征，均匀棚拍光，干净浅色背景，无文字。";
+const COSTUME_LAYOUT_SUFFIX = "人物全身定妆设定图，正面、侧面、背面三视角并列，中立站姿，服装细节清晰，干净浅色背景，无文字。";
+
+export function buildCharacterTurnaroundPrompt(markdown: string): string {
+  const explicit = readCharacterTurnaroundPromptFields(markdown).prompt;
+  if (explicit) return explicit;
+  const identity = characterIdentityVisualCore(markdown);
+  return [identity, TURNAROUND_LAYOUT_SUFFIX].filter(Boolean).join("；");
+}
+
+export function buildCharacterCostumePrompt(
+  profileMarkdown: string,
+  lookMarkdown = "",
+  promptOverride?: string,
+): string {
+  const lookFields = readCharacterLookPromptFields(lookMarkdown);
+  const identity = characterIdentityVisualCore(profileMarkdown);
+  const lookVisual = lookVisualCore(lookMarkdown);
+  const explicit = typeof promptOverride === "string"
+    ? cleanPromptText(promptOverride)
+    : lookFields.prompt;
+  // LOOK prompts may already repeat the identity core. Keep one copy while
+  // guaranteeing that a hand-authored LOOK cannot lose the character anchor.
+  const identityPart = identity && (!explicit || !explicit.includes(identity)) ? identity : "";
+  return [identityPart, explicit || lookVisual, COSTUME_LAYOUT_SUFFIX]
+    .filter(Boolean)
+    .join("；");
 }
 
 function parseShotDetails(markdown: string): Map<string, ShotDetail> {
@@ -938,9 +1440,9 @@ async function buildCharacterAssets(
   );
 
   const characters = await Promise.all(characterDirectories.map(async (directory) => {
-    const profile = (index.filesByDirectory.get(directory.absolutePath) ?? [])
-      .find((file) => file.name === "角色设定.md");
-    const profileContent = profile ? await readIndexedText(profile) : "";
+    const pairedProfile = await readPairedDocument(index, directory, "角色设定.md", CHARACTER_PROFILE_JSON, "character");
+    const profile = pairedProfile.markdown;
+    const profileContent = pairedProfile.content;
     const slots = readAssetSlots(directory.absolutePath, CHARACTER_SLOT_DEFINITIONS, index.filesByDirectory);
     const [looks, visualMetadata] = await Promise.all([
       buildCharacterLooks(directory, index),
@@ -959,6 +1461,9 @@ async function buildCharacterAssets(
       name: directory.name,
       roleCategory: parseCharacterRoleCategory(profileContent),
       ...(profile ? { profilePath: profile.relativePath, profileContent } : {}),
+      ...(pairedProfile.json ? { profileJsonPath: pairedProfile.json.relativePath } : {}),
+      ...(pairedProfile.prompt ? { turnaroundPrompt: pairedProfile.prompt } : {}),
+      ...(pairedProfile.negativePrompt ? { turnaroundNegativePrompt: pairedProfile.negativePrompt } : {}),
       profileRevision: createTextRevision(profileContent),
       slots,
       confirmedVisuals,
@@ -967,9 +1472,7 @@ async function buildCharacterAssets(
       ...(confirmedTurnaroundSourcePath ? { confirmedTurnaroundSourcePath } : {}),
       looks,
       cover: confirmedTurnaround
-        ?? confirmedVisuals.costume
-        ?? confirmedVisuals.reference
-        ?? pickCover(slots, ["turnaround", "costume", "reference"]),
+        ?? pickCover(slots, ["turnaround"]),
       updatedAt: latestUpdatedAt(directory, [...(profile ? [profile] : []), ...slotFiles]),
     };
   }));
@@ -1032,6 +1535,66 @@ async function writeShotDesignJson(targetPath: string, design: ShotDesign, sourc
   await writeTextAtomically(targetPath, serializeShotDesignJson(design, source));
 }
 
+async function migrateCachedShotDesigns(root: string): Promise<void> {
+  const cachePath = path.join(root, PROJECT_JSON_PATH);
+  let info: Stats;
+  try {
+    info = await fs.lstat(cachePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_PROJECT_JSON_BYTES) return;
+
+  let value: unknown;
+  try {
+    value = JSON.parse(await fs.readFile(cachePath, "utf8"));
+  } catch {
+    return;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  const snapshot = value as Record<string, unknown>;
+  if (!LEGACY_PROJECT_SNAPSHOT_SCHEMA_VERSIONS.has(snapshot.schemaVersion as number) || !Array.isArray(snapshot.shots)) return;
+
+  for (const item of snapshot.shots) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const cachedShot = item as Record<string, unknown>;
+    if (typeof cachedShot.rootPath !== "string" || typeof cachedShot.designPath !== "string") continue;
+
+    let assetPath: string;
+    let design: ShotDesign;
+    try {
+      assetPath = assertVisibleProjectPath(cachedShot.rootPath);
+      design = validateShotDesign(cachedShot.design);
+    } catch {
+      continue;
+    }
+    const segments = assetPath.split("/");
+    if (
+      segments.length !== 3
+      || segments[0] !== "分镜"
+      || segments[1] !== design.sceneId
+      || (segments[2] !== design.shotId && !segments[2].startsWith(`${design.shotId}-`))
+      || cachedShot.designPath !== `${assetPath}/镜头.md`
+    ) continue;
+
+    const assetDirectory = path.join(root, ...segments);
+    const markdownPath = path.join(assetDirectory, "镜头.md");
+    const designPath = path.join(assetDirectory, "design.json");
+    try {
+      const [directoryInfo, markdownInfo] = await Promise.all([fs.lstat(assetDirectory), fs.lstat(markdownPath)]);
+      if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink() || !markdownInfo.isFile() || markdownInfo.isSymbolicLink()) continue;
+      const existing = await fs.lstat(designPath).catch((error: NodeJS.ErrnoException) =>
+        error.code === "ENOENT" ? undefined : Promise.reject(error),
+      );
+      if (existing) continue;
+      await fs.writeFile(designPath, serializeShotDesignJson(design), { encoding: "utf8", flag: "wx", mode: 0o600 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  }
+}
+
 async function buildStoredShotAssets(index: ProjectIndex): Promise<ShotAsset[]> {
   const designFiles = index.files.filter((file) => {
     if (file.name !== "design.json") return false;
@@ -1077,9 +1640,10 @@ async function buildSimpleDocumentAssets(
     (directory) => path.basename(path.dirname(directory.absolutePath)) === parentName,
   );
   return Promise.all(directories.map(async (directory) => {
-    const document = (index.filesByDirectory.get(directory.absolutePath) ?? [])
-      .find((file) => file.name === documentName);
-    const content = document ? await readIndexedText(document) : "";
+    const jsonName = type === "location" ? LOCATION_PROFILE_JSON : PROP_PROFILE_JSON;
+    const pairedDocument = await readPairedDocument(index, directory, documentName, jsonName, type);
+    const document = pairedDocument.markdown;
+    const content = pairedDocument.content;
     const slots = readAssetSlots(directory.absolutePath, slotDefinitions, index.filesByDirectory);
     const confirmedVisuals: Record<string, AssetFile | undefined> = {};
     for (const slot of slots) confirmedVisuals[slot.key] = findConfirmedVisual(slot.files);
@@ -1091,6 +1655,9 @@ async function buildSimpleDocumentAssets(
       rootPath: directory.relativePath,
       name: directory.name,
       ...(document ? { profilePath: document.relativePath, profileContent: content } : {}),
+      ...(pairedDocument.json ? { profileJsonPath: pairedDocument.json.relativePath } : {}),
+      ...(pairedDocument.prompt ? { prompt: pairedDocument.prompt } : {}),
+      ...(pairedDocument.negativePrompt ? { negativePrompt: pairedDocument.negativePrompt } : {}),
       profileRevision: createTextRevision(content),
       slots,
       confirmedVisuals,
@@ -1343,13 +1910,13 @@ async function buildSceneAssets(
   );
 
   const scenes = await Promise.all(sceneDirectories.map(async (directory) => {
-    const sceneFile = (index.filesByDirectory.get(directory.absolutePath) ?? [])
-      .find((file) => file.name === "场次.md");
+    const pairedScene = await readPairedDocument(index, directory, "场次.md", SCENE_DOCUMENT_JSON, "scene");
+    const sceneFile = pairedScene.markdown;
     const castFile = (index.filesByDirectory.get(directory.absolutePath) ?? [])
       .find((file) => file.name === SCENE_CAST_DOCUMENT);
     const assetBindingsFile = (index.filesByDirectory.get(directory.absolutePath) ?? [])
       .find((file) => file.name === SCENE_ASSET_BINDINGS_DOCUMENT);
-    const sceneContent = sceneFile ? await readIndexedText(sceneFile) : "";
+    const sceneContent = pairedScene.content;
     const castContent = castFile ? await readIndexedText(castFile) : "";
     const assetBindingsContent = assetBindingsFile ? await readIndexedText(assetBindingsFile) : "";
     const parsedBindings = assetBindingsFile
@@ -1372,6 +1939,9 @@ async function buildSceneAssets(
       rootPath: directory.relativePath,
       sceneId,
       ...(sceneFile ? { scenePath: sceneFile.relativePath, sceneContent } : {}),
+      ...(pairedScene.json ? { sceneJsonPath: pairedScene.json.relativePath } : {}),
+      ...(pairedScene.prompt ? { prompt: pairedScene.prompt } : {}),
+      ...(pairedScene.negativePrompt ? { negativePrompt: pairedScene.negativePrompt } : {}),
       sceneRevision: createTextRevision(sceneContent),
       ...(castFile ? { castPath: castFile.relativePath } : {}),
       castRevision: createTextRevision(castContent),
@@ -1448,9 +2018,14 @@ function parseStoryboardDraftRequest(value: string): StoryboardDraftRequest | un
 
 export async function getAssetWorkspaceSnapshot(): Promise<AssetWorkspaceSnapshot> {
   const root = await getProjectRoot();
+  await migrateCachedShotDesigns(root);
   const cached = await readProjectJsonSnapshot(root);
   if (cached) return cached;
-  const index = await scanVisibleProject(root);
+  let index = await scanVisibleProject(root);
+  if (await ensureMissingDocumentSidecars(index)) {
+    // Include newly created sidecars in the same snapshot and cache write.
+    index = await scanVisibleProject(root);
+  }
   const projectSettingsFile = index.files.find((file) => file.relativePath === "项目设定.md");
   const projectSettingsContent = projectSettingsFile
     ? await readIndexedText(projectSettingsFile)
@@ -1525,8 +2100,9 @@ async function readProjectJsonSnapshot(root: string): Promise<AssetWorkspaceSnap
     throw new ProjectPathError(".workbench/project.json 必须是 JSON 对象。");
   }
   const raw = value as Record<string, unknown>;
+  if (LEGACY_PROJECT_SNAPSHOT_SCHEMA_VERSIONS.has(raw.schemaVersion as number)) return undefined;
   const arrays = ["characters", "locations", "props", "scenes", "shots"];
-  if (raw.schemaVersion !== 1 || raw.rootName !== path.basename(root)
+  if (raw.schemaVersion !== PROJECT_SNAPSHOT_SCHEMA_VERSION || raw.rootName !== path.basename(root)
     || !raw.projectSettings || arrays.some((key) => !Array.isArray(raw[key]))) {
     throw new ProjectPathError(".workbench/project.json 的版本或资产结构无效。");
   }
@@ -1535,14 +2111,149 @@ async function readProjectJsonSnapshot(root: string): Promise<AssetWorkspaceSnap
       && Array.isArray((raw.projectIndex as Record<string, unknown>).chapters)
       && (raw.projectIndex as Record<string, unknown>).chapters.length,
   );
+  // A cache created before the slot model was simplified must not keep
+  // surfacing removed character or scene slots after a restart.
+  if (cachedSnapshotUsesLegacySlots(raw)) return undefined;
+  if (cachedSnapshotMissingDocumentJson(raw)) return undefined;
   if (!(await projectJsonIsFresh(root, info.mtimeMs, hasStructuredIndex))) return undefined;
-  // Keep schema v1 caches readable after the scene asset relation fields were added.
+  hydrateCachedCharacterPromptFields(raw);
+  // Keep cached scene relation fields complete when a prior v2 write predates them.
   for (const scene of raw.scenes as Array<Record<string, unknown>>) {
     if (!Array.isArray(scene.locationBindings)) scene.locationBindings = [];
     if (!Array.isArray(scene.propBindings)) scene.propBindings = [];
     if (typeof scene.assetBindingsRevision !== "string") scene.assetBindingsRevision = createTextRevision("");
   }
   return raw as unknown as AssetWorkspaceSnapshot;
+}
+
+function cachedSnapshotMissingDocumentJson(raw: Record<string, unknown>): boolean {
+  const missing = (item: unknown, contentKey: string, jsonKey: string): boolean => (
+    item && typeof item === "object" && !Array.isArray(item)
+    && typeof (item as Record<string, unknown>)[contentKey] === "string"
+    && typeof (item as Record<string, unknown>)[jsonKey] !== "string"
+  );
+  const characters = Array.isArray(raw.characters) ? raw.characters : [];
+  if (characters.some((character) => {
+    if (missing(character, "profileContent", "profileJsonPath")) return true;
+    const looks = character && typeof character === "object" && !Array.isArray(character)
+      ? (character as Record<string, unknown>).looks
+      : undefined;
+    return Array.isArray(looks) && looks.some((look) => missing(look, "documentContent", "documentJsonPath"));
+  })) return true;
+  for (const key of ["locations", "props"] as const) {
+    const assets = Array.isArray(raw[key]) ? raw[key] : [];
+    if (assets.some((asset) => missing(asset, "profileContent", "profileJsonPath"))) return true;
+  }
+  const scenes = Array.isArray(raw.scenes) ? raw.scenes : [];
+  return scenes.some((scene) => missing(scene, "sceneContent", "sceneJsonPath"));
+}
+
+function cachedSnapshotUsesLegacySlots(raw: Record<string, unknown>): boolean {
+  const hasSlot = (value: unknown, legacyKeys: readonly string[]): boolean => {
+    if (!Array.isArray(value)) return false;
+    return value.some((slot) => (
+      slot && typeof slot === "object" && !Array.isArray(slot)
+      && legacyKeys.includes((slot as Record<string, unknown>).key as string)
+    ));
+  };
+  const characters = Array.isArray(raw.characters) ? raw.characters : [];
+  if (characters.some((character) => {
+    if (!character || typeof character !== "object" || Array.isArray(character)) return false;
+    const item = character as Record<string, unknown>;
+    if (hasSlot(item.slots, ["costume", "reference"])) return true;
+    return Array.isArray(item.looks) && item.looks.some((look) => (
+      look && typeof look === "object" && !Array.isArray(look)
+      && hasSlot((look as Record<string, unknown>).slots, ["costume", "reference"])
+    ));
+  })) return true;
+  const scenes = Array.isArray(raw.scenes) ? raw.scenes : [];
+  return scenes.some((scene) => (
+    scene && typeof scene === "object" && !Array.isArray(scene)
+    && hasSlot((scene as Record<string, unknown>).slots, ["setting", "reference", "firstFrame", "lastFrame", "video"])
+  ));
+}
+
+function hydrateCachedCharacterPromptFields(raw: Record<string, unknown>): void {
+  if (!Array.isArray(raw.characters)) return;
+  const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
+    Object.prototype.hasOwnProperty.call(value, key);
+  const firstString = (value: Record<string, unknown>, keys: readonly string[]): string | undefined => {
+    for (const key of keys) {
+      if (typeof value[key] === "string") return value[key] as string;
+    }
+    return undefined;
+  };
+
+  for (const item of raw.characters) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const character = item as Record<string, unknown>;
+    const profile = typeof character.profileContent === "string" ? character.profileContent : "";
+    // An explicit empty string is meaningful (it lets the user clear a
+    // prompt), so only hydrate fields that are genuinely absent from old
+    // snapshots.
+    if (!hasOwn(character, "turnaroundPrompt")) {
+      const alias = firstString(character, [
+        "turnaround_prompt",
+        "threeViewPrompt",
+        "three_view_prompt",
+        "visualPrompt",
+        "visual_prompt",
+      ]);
+      if (alias !== undefined) character.turnaroundPrompt = alias;
+      else {
+        const parsed = readCharacterTurnaroundPromptFields(profile);
+        if (parsed.prompt) character.turnaroundPrompt = parsed.prompt;
+      }
+    }
+    if (!hasOwn(character, "turnaroundNegativePrompt")) {
+      const alias = firstString(character, [
+        "turnaround_negative_prompt",
+        "turnaroundNegative",
+        "visualNegativePrompt",
+        "visual_negative_prompt",
+        "negativePrompt",
+        "negative_prompt",
+      ]);
+      if (alias !== undefined) character.turnaroundNegativePrompt = alias;
+      else {
+        const parsed = readCharacterTurnaroundPromptFields(profile);
+        if (parsed.negativePrompt) character.turnaroundNegativePrompt = parsed.negativePrompt;
+      }
+    }
+    if (!Array.isArray(character.looks)) continue;
+    for (const lookItem of character.looks) {
+      if (!lookItem || typeof lookItem !== "object" || Array.isArray(lookItem)) continue;
+      const look = lookItem as Record<string, unknown>;
+      const document = typeof look.documentContent === "string" ? look.documentContent : "";
+      if (!hasOwn(look, "prompt")) {
+        const alias = firstString(look, [
+          "costumePrompt",
+          "costume_prompt",
+          "visualPrompt",
+          "visual_prompt",
+        ]);
+        if (alias !== undefined) look.prompt = alias;
+        else {
+          const parsed = readCharacterLookPromptFields(document);
+          if (parsed.prompt) look.prompt = parsed.prompt;
+        }
+      }
+      if (!hasOwn(look, "negativePrompt")) {
+        const alias = firstString(look, [
+          "costumeNegativePrompt",
+          "costume_negative_prompt",
+          "visualNegativePrompt",
+          "visual_negative_prompt",
+          "negative_prompt",
+        ]);
+        if (alias !== undefined) look.negativePrompt = alias;
+        else {
+          const parsed = readCharacterLookPromptFields(document);
+          if (parsed.negativePrompt) look.negativePrompt = parsed.negativePrompt;
+        }
+      }
+    }
+  }
 }
 
 async function projectJsonIsFresh(root: string, cacheMtimeMs: number, hasStructuredIndex: boolean): Promise<boolean> {
@@ -1579,7 +2290,7 @@ async function writeProjectJsonSnapshot(root: string, snapshot: AssetWorkspaceSn
   const target = path.join(directory, "project.json");
   const temporary = `${target}.${randomBytes(6).toString("hex")}.tmp`;
   try {
-    await fs.writeFile(temporary, `${JSON.stringify({ schemaVersion: 1, ...snapshot }, null, 2)}\n`, {
+    await fs.writeFile(temporary, `${JSON.stringify({ schemaVersion: PROJECT_SNAPSHOT_SCHEMA_VERSION, ...snapshot }, null, 2)}\n`, {
       encoding: "utf8",
       flag: "wx",
       mode: 0o600,
@@ -1810,7 +2521,8 @@ export async function updateProjectSettings(
   await withDirectoryLock(root, async () => {
     const currentContent = await readEditableTextOrEmpty(target);
     assertCurrentTextRevision(expectedRevision, currentContent);
-    await writeTextAtomically(target, safeContent.endsWith("\n") ? safeContent : `${safeContent}\n`);
+    const nextContent = safeContent.endsWith("\n") ? safeContent : `${safeContent}\n`;
+    await writeTextAtomically(target, nextContent);
   });
   await writeAudit({ action: "update-project-settings", path: "项目设定.md" });
   return "项目设定.md";
@@ -2925,6 +3637,12 @@ function serializeSceneDocument(sceneId: string, source?: ShotSource): string {
     "- **制作状态：** 待准备",
     "- **说明：** 在这里补充本场的空间关系、统一视觉、连续性和交付要求。",
     "",
+    "## 提示词",
+    "",
+    "",
+    "## 负面提示词",
+    "",
+    "",
   ].join("\n");
 }
 
@@ -2938,6 +3656,146 @@ function serializeSceneLocationPrompt(sceneId: string, shot: ShotAsset): string 
     prompt,
     "",
   ].join("\n");
+}
+
+type PairedDocumentKind = "character" | "look" | "location" | "prop" | "scene";
+
+interface DocumentSidecar {
+  version: number;
+  type: PairedDocumentKind;
+  prompt: string;
+  negativePrompt: string;
+  content: string;
+}
+
+function readPairedDocumentPrompt(kind: PairedDocumentKind, content: string): { prompt: string; negativePrompt: string } {
+  if (kind === "character") return readCharacterTurnaroundPromptFields(content);
+  if (kind === "look") return readCharacterLookPromptFields(content);
+  if (kind === "location") return readPromptFields(
+    content,
+    ["场景图提示词", "提示词"],
+    ["负面提示词", "场景图负面提示词"],
+    ["prompt", "visual_prompt", "场景图提示词", "提示词"],
+    ["negative_prompt", "negativePrompt", "负面提示词", "场景图负面提示词"],
+  );
+  if (kind === "prop") return readPromptFields(
+    content,
+    ["道具图提示词", "提示词"],
+    ["负面提示词", "道具图负面提示词"],
+    ["prompt", "visual_prompt", "道具图提示词", "提示词"],
+    ["negative_prompt", "negativePrompt", "负面提示词", "道具图负面提示词"],
+  );
+  return readPromptFields(
+    content,
+    ["提示词"],
+    ["负面提示词"],
+    ["prompt"],
+    ["negative_prompt", "negativePrompt"],
+  );
+}
+
+function serializeDocumentSidecar(
+  kind: PairedDocumentKind,
+  content: string,
+  promptFields = readPairedDocumentPrompt(kind, content),
+): string {
+  return `${JSON.stringify({
+    version: DOCUMENT_SIDECAR_VERSION,
+    type: kind,
+    prompt: promptFields.prompt,
+    negativePrompt: promptFields.negativePrompt,
+    content,
+  } satisfies DocumentSidecar, null, 2)}\n`;
+}
+
+async function writeDocumentPair(
+  directory: string,
+  markdownName: string,
+  jsonName: string,
+  kind: PairedDocumentKind,
+  content: string,
+): Promise<void> {
+  const safeContent = content.endsWith("\n") ? content : `${content}\n`;
+  await writeTextAtomically(path.join(directory, markdownName), safeContent);
+  await writeTextAtomically(
+    path.join(directory, jsonName),
+    serializeDocumentSidecar(kind, safeContent),
+  );
+}
+
+async function readPairedDocument(
+  index: ProjectIndex,
+  directory: IndexedEntry,
+  markdownName: string,
+  jsonName: string,
+  kind: PairedDocumentKind,
+): Promise<{
+  markdown?: IndexedEntry;
+  json?: IndexedEntry;
+  content: string;
+  prompt: string;
+  negativePrompt: string;
+}> {
+  const entries = index.filesByDirectory.get(directory.absolutePath) ?? [];
+  const markdown = entries.find((file) => file.name === markdownName);
+  const json = entries.find((file) => file.name === jsonName);
+  let content = markdown ? await readIndexedText(markdown) : "";
+  if (json && (!markdown || json.stats.mtimeMs > markdown.stats.mtimeMs)) {
+    try {
+      const parsed = JSON.parse(await readIndexedText(json)) as Partial<DocumentSidecar>;
+      if (parsed.type === kind && typeof parsed.content === "string") content = parsed.content;
+    } catch {
+      // A malformed sidecar must not hide an otherwise readable Markdown document.
+    }
+  }
+  const promptFields = readPairedDocumentPrompt(kind, content);
+  return { markdown, json, content, ...promptFields };
+}
+
+async function ensureMissingDocumentSidecars(index: ProjectIndex): Promise<boolean> {
+  const pairs = index.files.flatMap((file) => {
+    const segments = file.relativePath.split("/");
+    const parentSegments = segments.slice(0, -1);
+    const parent = parentSegments.join("/");
+    let jsonName = "";
+    let kind: PairedDocumentKind | "" = "";
+    if (file.name === "角色设定.md" && parentSegments[0] === "主要人物" && parentSegments.length === 2) {
+      jsonName = CHARACTER_PROFILE_JSON;
+      kind = "character";
+    } else if (file.name === CHARACTER_LOOK_DOCUMENT && parentSegments[0] === "主要人物"
+      && parentSegments.length === 4 && parentSegments[2] === CHARACTER_LOOK_DIRECTORY) {
+      jsonName = CHARACTER_LOOK_JSON;
+      kind = "look";
+    } else if (file.name === "场景设定.md" && parentSegments[0] === "场景" && parentSegments.length === 2) {
+      jsonName = LOCATION_PROFILE_JSON;
+      kind = "location";
+    } else if (file.name === "道具设定.md" && parentSegments[0] === "道具" && parentSegments.length === 2) {
+      jsonName = PROP_PROFILE_JSON;
+      kind = "prop";
+    } else if (file.name === "场次.md" && parentSegments[0] === "分镜" && parentSegments.length === 2) {
+      jsonName = SCENE_DOCUMENT_JSON;
+      kind = "scene";
+    }
+    return kind ? [{ file, parent, jsonName, kind }] : [];
+  });
+  let created = false;
+  for (const pair of pairs) {
+    const directory = path.dirname(pair.file.absolutePath);
+    const jsonPath = path.join(directory, pair.jsonName);
+    if ((index.filesByDirectory.get(directory) ?? []).some((file) => file.name === pair.jsonName)) continue;
+    await withDirectoryLock(directory, async () => {
+      try {
+        await fs.lstat(jsonPath);
+        return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      const content = await readIndexedText(pair.file);
+      await writeTextAtomically(jsonPath, serializeDocumentSidecar(pair.kind, content));
+      created = true;
+    });
+  }
+  return created;
 }
 
 async function writeTextAtomically(target: string, content: string): Promise<void> {
@@ -3110,10 +3968,12 @@ async function ensureSceneAssetDirectory(
       safeSceneId,
       SCENE_SLOT_DEFINITIONS,
       async (temporary) => {
-        await fs.writeFile(
-          path.join(temporary, "场次.md"),
+        await writeDocumentPair(
+          temporary,
+          "场次.md",
+          SCENE_DOCUMENT_JSON,
+          "scene",
           serializeSceneDocument(safeSceneId, source),
-          { flag: "wx" },
         );
         await fs.writeFile(
           path.join(temporary, SCENE_CAST_DOCUMENT),
@@ -3145,6 +4005,16 @@ async function ensureSceneAssetDirectory(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       await writeTextAtomically(sceneDocument, serializeSceneDocument(safeSceneId, source));
+    }
+    const sceneJson = path.join(directory, SCENE_DOCUMENT_JSON);
+    try {
+      const entry = await fs.lstat(sceneJson);
+      if (!entry.isFile() || entry.isSymbolicLink()) {
+        throw new ProjectPathError("The scene JSON document must be a regular file.");
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      await writeTextAtomically(sceneJson, serializeDocumentSidecar("scene", await readEditableTextOrEmpty(sceneDocument)));
     }
     const castDocument = path.join(directory, SCENE_CAST_DOCUMENT);
     try {
@@ -3279,10 +4149,12 @@ async function createSimpleDocumentAsset(
     slotDefinitions,
     async (directory) => {
       const heading = type === "location" ? "场景设定" : "道具设定";
-      await fs.writeFile(
-        path.join(directory, documentName),
-        `# ${safeName}${heading}\n\n## 基础设定\n\n- **用途：** 请补充该资产在故事中的用途、外观和连续性要求。\n`,
-        { flag: "wx" },
+      await writeDocumentPair(
+        directory,
+        documentName,
+        type === "location" ? LOCATION_PROFILE_JSON : PROP_PROFILE_JSON,
+        type,
+        `# ${safeName}${heading}\n\n## 基础设定\n\n- **用途：** 请补充该资产在故事中的用途、外观和连续性要求。\n\n## 提示词\n\n\n\n## 负面提示词\n\n`,
       );
     },
   );
@@ -3316,10 +4188,12 @@ export async function createCharacterAsset(name: string): Promise<string> {
     safeName,
     CHARACTER_SLOT_DEFINITIONS,
     async (directory) => {
-      await fs.writeFile(
-        path.join(directory, "角色设定.md"),
-        `# ${safeName}角色设定\n\n## 角色定位\n\n- **角色分类：** 待分类\n- **身份：** 请在这里补充人物身份、外形、服装与表演设定。\n`,
-        { flag: "wx" },
+      await writeDocumentPair(
+        directory,
+        "角色设定.md",
+        CHARACTER_PROFILE_JSON,
+        "character",
+        `# ${safeName}角色设定\n\n## 角色定位\n\n- **角色分类：** 待分类\n- **身份：** 请在这里补充人物身份、外形、服装与表演设定。\n\n## 三视图提示词\n\n\n\n## 三视图负面提示词\n\n`,
       );
     },
     { normalizedCharacterName: normalizedName },
@@ -3359,8 +4233,11 @@ export async function createCharacterLookAsset(
     directoryName,
     CHARACTER_SLOT_DEFINITIONS,
     async (directory) => {
-      await fs.writeFile(
-        path.join(directory, CHARACTER_LOOK_DOCUMENT),
+      await writeDocumentPair(
+        directory,
+        CHARACTER_LOOK_DOCUMENT,
+        CHARACTER_LOOK_JSON,
+        "look",
         [
           `# ${lookId} ${safeName}`,
           "",
@@ -3378,8 +4255,13 @@ export async function createCharacterLookAsset(
           "- **固定道具：** 请描述必须保持一致的道具。",
           "- **连续性：** 请描述跨镜头不能变化的细节。",
           "",
+          "## 三视图提示词",
+          "",
+          "",
+          "## 三视图负面提示词",
+          "",
+          "",
         ].join("\n"),
-        { flag: "wx" },
       );
     },
     {
@@ -3597,7 +4479,12 @@ export async function updateCharacterProfile(
   await withDirectoryLock(absoluteRoot, async () => {
     const currentContent = await readEditableTextOrEmpty(target);
     assertCurrentTextRevision(expectedRevision, currentContent);
-    await writeTextAtomically(target, safeContent.endsWith("\n") ? safeContent : `${safeContent}\n`);
+    const nextContent = safeContent.endsWith("\n") ? safeContent : `${safeContent}\n`;
+    await writeTextAtomically(target, nextContent);
+    await writeTextAtomically(
+      path.join(absoluteRoot, CHARACTER_PROFILE_JSON),
+      serializeDocumentSidecar("character", nextContent),
+    );
   });
   const relativePath = makeRelative(await getProjectRoot(), target);
   await writeAudit({ action: "update-character-profile", path: relativePath });
@@ -3617,7 +4504,12 @@ export async function updateCharacterLookDocument(
   await withDirectoryLock(absoluteRoot, async () => {
     const currentContent = await readEditableTextOrEmpty(target);
     assertCurrentTextRevision(expectedRevision, currentContent);
-    await writeTextAtomically(target, safeContent.endsWith("\n") ? safeContent : `${safeContent}\n`);
+    const nextContent = safeContent.endsWith("\n") ? safeContent : `${safeContent}\n`;
+    await writeTextAtomically(target, nextContent);
+    await writeTextAtomically(
+      path.join(path.dirname(target), CHARACTER_LOOK_JSON),
+      serializeDocumentSidecar("look", nextContent),
+    );
   });
   const relativePath = makeRelative(await getProjectRoot(), target);
   await writeAudit({
@@ -3643,7 +4535,12 @@ export async function updateSceneDocument(
   await withDirectoryLock(path.dirname(target), async () => {
     const currentContent = await readEditableTextOrEmpty(target);
     assertCurrentTextRevision(expectedRevision, currentContent);
-    await writeTextAtomically(target, safeContent.endsWith("\n") ? safeContent : `${safeContent}\n`);
+    const nextContent = safeContent.endsWith("\n") ? safeContent : `${safeContent}\n`;
+    await writeTextAtomically(target, nextContent);
+    await writeTextAtomically(
+      path.join(path.dirname(target), SCENE_DOCUMENT_JSON),
+      serializeDocumentSidecar("scene", nextContent),
+    );
   });
   const relativePath = makeRelative(await getProjectRoot(), target);
   await writeAudit({ action: "update-scene-document", path: relativePath });
@@ -3666,7 +4563,12 @@ async function updateSimpleDocument(
   await withDirectoryLock(absoluteRoot, async () => {
     const currentContent = await readEditableTextOrEmpty(target);
     assertCurrentTextRevision(expectedRevision, currentContent);
-    await writeTextAtomically(target, safeContent.endsWith("\n") ? safeContent : `${safeContent}\n`);
+    const nextContent = safeContent.endsWith("\n") ? safeContent : `${safeContent}\n`;
+    await writeTextAtomically(target, nextContent);
+    await writeTextAtomically(
+      path.join(absoluteRoot, assetType === "location" ? LOCATION_PROFILE_JSON : PROP_PROFILE_JSON),
+      serializeDocumentSidecar(assetType, nextContent),
+    );
   });
   const relativePath = makeRelative(await getProjectRoot(), target);
   await writeAudit({ action: `update-${assetType}-document`, path: relativePath });

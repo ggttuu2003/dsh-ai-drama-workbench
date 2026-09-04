@@ -4,7 +4,7 @@ export type WorkspaceAssetType = "character" | "location" | "prop" | "scene" | "
 
 export type AssetFileKind = Exclude<AssetKind, "folder">;
 
-export const CHARACTER_VISUAL_SLOT_KEYS = ["turnaround", "costume", "reference"] as const;
+export const CHARACTER_VISUAL_SLOT_KEYS = ["turnaround"] as const;
 
 export type CharacterVisualSlotKey = (typeof CHARACTER_VISUAL_SLOT_KEYS)[number];
 
@@ -43,7 +43,12 @@ export interface CharacterAsset {
   name: string;
   roleCategory: CharacterRoleCategory;
   profilePath?: string;
+  profileJsonPath?: string;
   profileContent?: string;
+  /** Explicit prompt for the identity/turnaround image workflow. */
+  turnaroundPrompt?: string;
+  /** Optional negative prompt for the identity/turnaround image workflow. */
+  turnaroundNegativePrompt?: string;
   /** SHA-256 revision of the raw profile Markdown used to reject stale saves. */
   profileRevision: string;
   slots: AssetSlot[];
@@ -70,7 +75,12 @@ export interface CharacterLook {
   id: string;
   name: string;
   documentPath?: string;
+  documentJsonPath?: string;
   documentContent?: string;
+  /** Explicit prompt for this look's image workflow. */
+  prompt?: string;
+  /** Optional negative prompt for this look's image workflow. */
+  negativePrompt?: string;
   /** SHA-256 revision of `造型设定.md` used to reject stale saves. */
   documentRevision: string;
   slots: AssetSlot[];
@@ -128,7 +138,10 @@ export interface SceneAsset {
   rootPath: string;
   sceneId: string;
   scenePath?: string;
+  sceneJsonPath?: string;
   sceneContent?: string;
+  prompt?: string;
+  negativePrompt?: string;
   /** SHA-256 revision of the scene Markdown used to reject stale saves. */
   sceneRevision: string;
   /** Human-readable cast sheet with machine-readable bindings. */
@@ -154,7 +167,10 @@ export interface LocationAsset {
   rootPath: string;
   name: string;
   profilePath?: string;
+  profileJsonPath?: string;
   profileContent?: string;
+  prompt?: string;
+  negativePrompt?: string;
   profileRevision: string;
   slots: AssetSlot[];
   confirmedVisuals: Record<string, AssetFile | undefined>;
@@ -167,7 +183,10 @@ export interface PropAsset {
   rootPath: string;
   name: string;
   profilePath?: string;
+  profileJsonPath?: string;
   profileContent?: string;
+  prompt?: string;
+  negativePrompt?: string;
   profileRevision: string;
   slots: AssetSlot[];
   confirmedVisuals: Record<string, AssetFile | undefined>;

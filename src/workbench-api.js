@@ -47,7 +47,7 @@ import {
 const MAX_JSON_BYTES = 4 * 1024 * 1024
 const IMAGE_EXTENSIONS = new Set(['.avif', '.gif', '.jpeg', '.jpg', '.png', '.webp'])
 const VIDEO_EXTENSIONS = new Set(['.mkv', '.mov', '.mp4', '.webm'])
-const CHARACTER_VISUAL_SLOTS = new Set(['turnaround', 'costume', 'reference'])
+const CHARACTER_VISUAL_SLOTS = new Set(['turnaround'])
 const ASSET_TYPES = new Set(['character', 'location', 'prop', 'scene', 'shot'])
 const GENERIC_BINARY_MEDIA_TYPE = 'application/octet-stream'
 const UPLOAD_MEDIA_BY_EXTENSION = new Map([

@@ -4,6 +4,20 @@
   "kind": "image",
   "description": "调用 api-workflows/image-to-image.api.json。使用 FLUX.2 Klein 4B 的独立 ReferenceLatent 条件进行一张或两张参考图生成，不混合参考图 latent。",
   "enabled": true,
+  "model": {
+    "id": "flux2-klein-4b",
+    "label": "FLUX.2 Klein 4B",
+    "presetIds": [
+      "scene-image-img2img-v1",
+      "shot-first-frame-img2img-v1",
+      "shot-last-frame-img2img-v1"
+    ],
+    "requirements": [
+      { "nodeId": "92:107", "field": "unet_name" },
+      { "nodeId": "92:108", "field": "clip_name" },
+      { "nodeId": "92:110", "field": "vae_name" }
+    ]
+  },
   "comfyPromptFile": "image-to-image.api.json",
   "inputMappings": {
     "prompt": {

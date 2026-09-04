@@ -16,6 +16,8 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+*.bak
+*.orig
 
 # Python cache and local runtime data
 __pycache__/

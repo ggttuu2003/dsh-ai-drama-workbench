@@ -111,6 +111,22 @@ class BridgeHttpTest(unittest.TestCase):
         self.assertIn("firstFrame", listed_workflows["video-first-last"]["uploadMappings"])
         self.assertIn("lastFrame", listed_workflows["video-first-last"]["uploadMappings"])
 
+        status, models = self.request_json("GET", "/models")
+        self.assertEqual(status, 200)
+        listed_models = {model["id"]: model for model in models["models"]}
+        self.assertEqual(
+            set(listed_models),
+            {"z-image-turbo", "qwen-image-2512", "flux2-klein-4b"},
+        )
+        self.assertTrue(listed_models["z-image-turbo"]["available"])
+        self.assertEqual(listed_models["z-image-turbo"]["workflowId"], "image-generate")
+        self.assertIn("shot-first-frame-v1", listed_models["z-image-turbo"]["presetIds"])
+        self.assertTrue(listed_models["flux2-klein-4b"]["available"])
+        self.assertEqual(listed_models["flux2-klein-4b"]["workflowId"], "image-to-image")
+        self.assertTrue(listed_models["qwen-image-2512"]["available"])
+        self.assertEqual(listed_models["qwen-image-2512"]["workflowId"], "image-generate-qwen")
+        self.assertIn("shot-first-frame-v1", listed_models["qwen-image-2512"]["presetIds"])
+
         status, raw_upload = self.request(
             "POST",
             "/uploads?name=selected-frame.png",
@@ -165,6 +181,34 @@ class BridgeHttpTest(unittest.TestCase):
     def test_non_loopback_comfy_url_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             bridge.validate_comfyui_url("http://198.51.100.1:8188")
+
+    def test_live_model_catalog_hides_variants_with_missing_components(self) -> None:
+        settings = bridge.Settings(
+            comfyui_url=self.settings.comfyui_url,
+            token=self.settings.token,
+            bind=self.settings.bind,
+            port=0,
+            mode="live",
+            data_dir=Path(self.temporary_directory.name) / "live-data",
+            workflows_dir=self.settings.workflows_dir,
+            max_upload_bytes=self.settings.max_upload_bytes,
+            max_output_bytes=self.settings.max_output_bytes,
+            request_timeout_seconds=self.settings.request_timeout_seconds,
+            execution_timeout_seconds=self.settings.execution_timeout_seconds,
+            poll_seconds=self.settings.poll_seconds,
+            workers=1,
+        )
+        app = bridge.BridgeApp(settings)
+        try:
+            # A declared graph must not become selectable merely because its
+            # contract exists; every required remote model choice must resolve.
+            app.comfy.input_choices = lambda _node_class, _field: set()  # type: ignore[method-assign]
+            models = {model["id"]: model for model in app.list_models()["models"]}
+            self.assertTrue(models)
+            self.assertTrue(all(not model["available"] for model in models.values()))
+            self.assertEqual(models["qwen-image-2512"]["reason"], "所需模型组件未安装")
+        finally:
+            app.close()
 
     def test_output_collection_only_returns_declared_nodes_and_media_kind(self) -> None:
         history = {
@@ -231,11 +275,23 @@ class BridgeHttpTest(unittest.TestCase):
         self.assertEqual(set(image["uploadMappings"]), set())
         self.assertEqual(image["comfyPromptFile"], "image-generate.api.json")
         self.assertEqual(image["outputNodeIds"], ["17"])
+        self.assertEqual(image["model"]["id"], "z-image-turbo")
+        self.assertEqual(
+            image["model"]["requirements"],
+            [
+                {"nodeId": "8", "field": "unet_name"},
+                {"nodeId": "5", "field": "clip_name"},
+                {"nodeId": "12", "field": "vae_name"},
+                {"nodeId": "7", "field": "lora_name"},
+                {"nodeId": "16", "field": "model_name"},
+            ],
+        )
         self.assertEqual(
             set(image_to_image["uploadMappings"]), {"referenceImage", "referenceImage2"}
         )
         self.assertEqual(image_to_image["comfyPromptFile"], "image-to-image.api.json")
         self.assertEqual(image_to_image["outputNodeIds"], ["94"])
+        self.assertEqual(image_to_image["model"]["id"], "flux2-klein-4b")
         self.assertEqual(image_to_image["uploadMappings"]["referenceImage"]["nodeId"], "76")
         self.assertEqual(image_to_image["uploadMappings"]["referenceImage2"]["nodeId"], "81")
         self.assertFalse(image_to_image["uploadMappings"]["referenceImage2"]["required"])

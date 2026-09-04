@@ -21,7 +21,7 @@ const STATE_PATH = process.env.DSH_AI_DRAMA_STATE_PATH
   ?? path.join(process.env.DSH_HOME ?? path.join(os.homedir(), '.dsh'), 'ai-drama-workbench.json')
 const SSH_CONFIG_PATH = process.env.DSH_AI_DRAMA_SSH_STATE_PATH
   ?? path.join(process.env.DSH_HOME ?? path.join(os.homedir(), '.dsh'), 'ai-drama-workbench-ssh.json')
-const SSH_CONFIG_VERSION = 1
+const SSH_CONFIG_VERSION = 2
 const SSH_STATUS_INTERVAL_MS = 10_000
 const SSH_PORT_MIN = 1
 const SSH_PORT_MAX = 65_535
@@ -38,9 +38,9 @@ let bridgeSyncing = false
 const MAX_BODY_BYTES = 1024 * 1024
 const MAX_TEXT_BYTES = 256 * 1024
 const MAX_SLOT_ITEMS = 80
-const PROJECT_STATE_VERSION = 2
+const PROJECT_STATE_VERSION = 3
 const MAX_PROJECT_NAME_LENGTH = 120
-const CHARACTER_SLOTS = ['三视图', '定妆', '参考图']
+const CHARACTER_SLOTS = ['三视图']
 const SCENE_SLOTS = ['场景图', '参考图', '首帧', '尾帧', '候选', '定稿', '成片']
 const SHOT_SLOTS = ['参考图', '首帧', '尾帧', '候选', '定稿', '成片']
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif'])
@@ -83,8 +83,18 @@ export function normalizeSshConfig(value = {}) {
     localPort: value.localPort === undefined || value.localPort === '' ? 8188 : sshPort(value.localPort, '本地端口'),
     remoteHost: value.remoteHost ? sshText(value.remoteHost, '远端转发主机', 120) : '127.0.0.1',
     remotePort: value.remotePort === undefined || value.remotePort === '' ? 8188 : sshPort(value.remotePort, '远端转发端口'),
+    password: value.password === undefined || value.password === '' ? '' : sshPassword(value.password),
   }
   return config
+}
+
+export function mergeSshConfig(current = {}, input = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new WorkbenchError('SSH 配置格式无效。')
+  }
+  const next = { ...current, ...input }
+  if (input.password === undefined || input.password === '') next.password = current.password ?? ''
+  return normalizeSshConfig(next)
 }
 
 export async function getBridgeSyncManifest(sourceDir = BRIDGE_SOURCE_DIR) {
@@ -204,6 +214,7 @@ function cleanupSshAskpass() {
 function sshPublicConfig(config, status) {
   return {
     configured: Boolean(config.host && config.user),
+    hasPassword: Boolean(config.password),
     name: config.name,
     host: config.host,
     port: config.port,
@@ -449,9 +460,9 @@ function runRemoteBridgeStart(config, environment) {
 
 async function startSshTunnel(rawConfig) {
   const input = rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig) ? rawConfig : {}
-  const config = normalizeSshConfig(input)
+  const config = mergeSshConfig(await readSshConfig(), input)
   if (!config.host || !config.user) throw new WorkbenchError('SSH 主机和用户名不能为空。')
-  const password = sshPassword(input.password)
+  const password = sshPassword(config.password)
   if (sshProcess && !sshProcess.killed) {
     const saved = await writeSshConfig(config)
     await waitForSshTunnel(saved, 4)
@@ -554,9 +565,9 @@ async function syncRemoteBridge(rawConfig) {
   try {
     const input = rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig) ? rawConfig : {}
     const previous = await readSshConfig()
-    const config = normalizeSshConfig({ ...previous, ...input })
+    const config = mergeSshConfig(previous, input)
     if (!config.host || !config.user) throw new WorkbenchError('SSH 主机和用户名不能为空。')
-    const password = sshPassword(input.password)
+    const password = sshPassword(config.password)
     const manifest = await getBridgeSyncManifest()
     const replaceTunnel = sshProcess && !sshProcess.killed && !sameSshTunnelConfig(previous, config)
     const askpass = await createSshAskpass()
@@ -581,7 +592,7 @@ async function syncRemoteBridge(rawConfig) {
     const saved = await writeSshConfig(config)
     if (!sshProcess || sshProcess.killed) {
       try {
-        await startSshTunnel({ ...saved, password })
+        await startSshTunnel(saved)
       } catch (error) {
         throw new WorkbenchError(`SSH 隧道启动失败：${errorMessage(error)}`)
       }
@@ -610,13 +621,11 @@ async function handleSshRequest(req, res, url) {
   requireSameOrigin(req)
   const body = await readRequestJson(req)
   if (url.pathname === '/ai-drama/api/ssh/config' && req.method === 'POST') {
-    const config = await writeSshConfig(body)
+    const config = await writeSshConfig(mergeSshConfig(await readSshConfig(), body))
     return responseJson(res, 200, sshPublicConfig(config, await getSshStatus(config))) || true
   }
   if (url.pathname === '/ai-drama/api/ssh/start' && req.method === 'POST') {
-    const saved = await readSshConfig()
-    const config = Object.keys(body).length ? { ...saved, ...body } : saved
-    return responseJson(res, 200, await startSshTunnel(config)) || true
+    return responseJson(res, 200, await startSshTunnel(body)) || true
   }
   if (url.pathname === '/ai-drama/api/ssh/sync' && req.method === 'POST') {
     return responseJson(res, 200, await syncRemoteBridge(body)) || true
@@ -1536,6 +1545,12 @@ async function resolveRequestProject(state, url) {
   return { id: undefined, root: await state.root() }
 }
 
+async function invalidatePlannerSnapshot(projectRoot) {
+  // Planner writes Markdown and design JSON directly, so discard the cached
+  // projection before the workbench reads the newly created assets.
+  await fs.rm(path.join(projectRoot, '.workbench', 'project.json'), { force: true }).catch(() => undefined)
+}
+
 async function callPlanner(state, operation, plannerInput, project = undefined) {
   if (!(await normalFile(PLANNER_BRIDGE))) throw new WorkbenchError('本地安全规划器文件缺失。')
   const [libraryRoot, activeProjectRoot] = project
@@ -1574,10 +1589,11 @@ async function callPlanner(state, operation, plannerInput, project = undefined) 
     })
     child.stderr.on('data', chunk => { stderr += chunk })
     child.on('error', error => finish(new WorkbenchError(`无法启动本地规划器：${errorMessage(error)}`)))
-    child.on('close', () => {
+    child.on('close', async () => {
       try {
         const payload = JSON.parse(stdout)
         if (!payload.ok) throw new WorkbenchError(typeof payload.error === 'string' ? payload.error : '本地规划器调用失败。')
+        if (operation === 'create' || operation === 'apply') await invalidatePlannerSnapshot(activeProjectRoot)
         finish(null, redactPlannerProjectPaths(payload.result))
       } catch (error) {
         const detail = stderr.trim() ? `（${stderr.trim().slice(0, 400)}）` : ''
@@ -1609,7 +1625,7 @@ function registerPlannerTools(ctx, state) {
   const render = (_args, value) => [{ type: 'text', text: jsonText(value) }]
   ctx.tools.register(defineTool({
     name: 'ai_drama_inspect',
-    description: '只读扫描指定 AI 漫剧项目的人物、LOOK、场次、镜头、场景和道具。project_id 是资产库中的项目名称（例如 my-test 或书名），不是路径；不会写入文件。未提供时使用工作台当前项目。',
+    description: '只读扫描指定 AI 漫剧项目的人物、LOOK、场次、分镜、场景和道具。project_id 是资产库中的项目名称（例如 my-test 或书名），不是路径；不会写入文件。未提供时使用工作台当前项目。',
     parameters: {
       project_id: { type: 'string', required: true, description: '资产库中的一级项目名称；例如 my-test 或小说书名。' },
     },
@@ -1621,7 +1637,7 @@ function registerPlannerTools(ctx, state) {
   }))
   ctx.tools.register(defineTool({
     name: 'ai_drama_stage_proposal',
-    description: '校验并暂存指定项目的 AI 漫剧拆解提案。必须先对同一 project_id 调用 ai_drama_inspect 并使用其 project_fingerprint。此工具绝不创建项目文件；plan_json 必须是符合工作台结构的 JSON 对象。',
+    description: '为“先预览方案／不要写入”的请求校验并暂存 AI 漫剧拆解提案。必须先对同一 project_id 调用 ai_drama_inspect 并使用其 project_fingerprint。此工具绝不创建项目文件；正常创建资产请求应使用 ai_drama_create_assets。',
     parameters: {
       project_id: { type: 'string', required: true, description: '资产库中的一级项目名称；必须与 inspect 使用的项目一致。' },
       project_fingerprint: { type: 'string', required: true, description: 'ai_drama_inspect 返回的项目指纹。' },
@@ -1634,6 +1650,23 @@ function registerPlannerTools(ctx, state) {
       try { plan = JSON.parse(args.plan_json) } catch { throw new WorkbenchError('plan_json 必须是有效 JSON。') }
       const project = await plannerProjectFromArguments(state, args)
       return callPlanner(state, 'stage', await plannerArguments(state, { ...args, plan }, project), project)
+    },
+  }))
+  ctx.tools.register(defineTool({
+    name: 'ai_drama_create_assets',
+    description: '当用户明确要求创建项目资产、拆解为资产、建立首章或导入片段时使用。校验计划后立即以可回滚事务写入人物、场景、道具、场次、分镜设计和空资料槽；不会生成图片或视频。若用户明确要求先预览方案，则改用 ai_drama_stage_proposal。',
+    parameters: {
+      project_id: { type: 'string', required: true, description: '资产库中的一级项目名称；必须与 inspect 使用的项目一致。' },
+      project_fingerprint: { type: 'string', required: true, description: 'ai_drama_inspect 返回的项目指纹。' },
+      novel_excerpt: { type: 'string', required: true, description: '用户提供的小说或剧本片段。' },
+      plan_json: { type: 'string', required: true, description: '严格 JSON：new_characters、look_additions、new_locations、new_props、new_scenes 等资产计划。' },
+    },
+    output: { schema: { type: 'json' }, render },
+    async execute(args) {
+      let plan
+      try { plan = JSON.parse(args.plan_json) } catch { throw new WorkbenchError('plan_json 必须是有效 JSON。') }
+      const project = await plannerProjectFromArguments(state, args)
+      return callPlanner(state, 'create', await plannerArguments(state, { ...args, plan }, project), project)
     },
   }))
   ctx.tools.register(defineTool({
@@ -1651,7 +1684,7 @@ function registerPlannerTools(ctx, state) {
   }))
   ctx.tools.register(defineTool({
     name: 'ai_drama_apply_proposal',
-    description: '执行已审核的提案。只有在用户明确输入精确确认语句“确认写入 <proposal_id>”后才能调用；会再次校验项目变化，并以事务方式创建真实空目录和 Markdown，绝不生成虚假图片。',
+    description: '执行用户要求“先预览方案”后确认的提案。只有在用户明确输入精确确认语句“确认写入 <proposal_id>”后才能调用；会再次校验项目变化，并以事务方式创建真实空目录和 Markdown，绝不生成虚假图片。',
     parameters: {
       project_id: { type: 'string', required: true, description: '提案所属的资产库一级项目名称。' },
       proposal_id: { type: 'string', required: true, description: '暂存提案 ID。' },

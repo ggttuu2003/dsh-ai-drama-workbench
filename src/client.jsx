@@ -240,19 +240,19 @@ function SshSettings({ connection, error, busy, syncing, onClose, onSave, onStar
   const [draft, setDraft] = useState(connection || emptyConnection)
   const [password, setPassword] = useState('')
   const connected = connection?.status?.state === 'connected'
+  const passwordAvailable = Boolean(password || connection?.hasPassword)
   useEffect(() => { if (connection) setDraft(connection) }, [connection])
   const update = (key, value) => setDraft(current => ({ ...current, [key]: ['port', 'localPort', 'remotePort'].includes(key) ? Number(value) : value }))
   const start = () => {
-    try { onStart({ ...draft, password }) } finally { setPassword('') }
+    try { onStart({ ...draft, ...(password ? { password } : {}) }) } finally { setPassword('') }
   }
   const save = () => {
-    const config = { ...draft }
-    delete config.password
+    const config = { ...draft, ...(password ? { password } : {}) }
     setPassword('')
     onSave(config)
   }
   const sync = () => {
-    const value = { ...draft, password }
+    const value = { ...draft, ...(password ? { password } : {}) }
     setPassword('')
     onSync(value)
   }
@@ -261,11 +261,11 @@ function SshSettings({ connection, error, busy, syncing, onClose, onSave, onStar
       <div className="adw-ssh-heading"><div><h2 id="adw-ssh-title">云服务器连接</h2></div><button aria-label="关闭云服务器设置" onClick={onClose} type="button">×</button></div>
       <div className={`adw-ssh-status is-${connection?.status?.state || 'unconfigured'}`}><i /> <div><strong>{connection?.status?.label || (error ? '无法读取状态' : '正在读取设置…')}</strong>{connection?.status?.state === 'error' && connection.status.detail ? <span>{connection.status.detail}</span> : null}</div></div>
       <div className="adw-ssh-grid">
-        <label className="adw-ssh-field is-wide"><span>SSH 密码</span><input autoComplete="off" onChange={event => setPassword(event.target.value)} placeholder="请输入服务器密码" type="password" value={password} /></label>
+        <label className="adw-ssh-field is-wide"><span>{connection?.hasPassword ? 'SSH 密码（已保存在本机）' : 'SSH 密码（仅保存在本机）'}</span><input autoComplete="off" onChange={event => setPassword(event.target.value)} placeholder={connection?.hasPassword ? '留空继续使用，输入新密码可替换' : '请输入服务器密码'} type="password" value={password} /></label>
         {[["host", "服务器地址", "example.com"], ["user", "SSH 用户名", "ubuntu"], ["port", "SSH 端口", "22"], ["localPort", "本地转发端口", "8188"], ["remoteHost", "云端服务地址", "127.0.0.1"], ["remotePort", "云端服务端口", "8188"]].map(([key, label, placeholder]) => <label className="adw-ssh-field" key={key}><span>{label}</span><input onChange={event => update(key, event.target.value)} placeholder={placeholder} type={['port', 'localPort', 'remotePort'].includes(key) ? 'number' : 'text'} value={draft[key] ?? ''} /></label>)}
       </div>
       {error ? <p className="adw-ssh-error" role="alert">{error}</p> : null}
-      <div className="adw-ssh-actions"><button className="is-primary is-sync" disabled={busy || !draft.host || !draft.user || !password} onClick={sync} type="button">{syncing ? '同步中…' : '同步工作流'}</button><button disabled={busy} onClick={save} type="button">保存设置</button>{connected ? <button className="is-danger" disabled={busy} onClick={onStop} type="button">断开连接</button> : connection?.status?.state === 'error' || connection?.status?.state === 'connecting' ? <button className="is-danger" disabled={busy} onClick={onStop} type="button">重置连接</button> : <button disabled={busy || !draft.host || !draft.user || !password} onClick={start} type="button">启动连接</button>}</div>
+      <div className="adw-ssh-actions"><button className="is-primary is-sync" disabled={busy || !draft.host || !draft.user || !passwordAvailable} onClick={sync} type="button">{syncing ? '同步中…' : '同步工作流'}</button><button disabled={busy} onClick={save} type="button">保存设置</button>{connected ? <button className="is-danger" disabled={busy} onClick={onStop} type="button">断开连接</button> : connection?.status?.state === 'error' || connection?.status?.state === 'connecting' ? <button className="is-danger" disabled={busy} onClick={onStop} type="button">重置连接</button> : <button disabled={busy || !draft.host || !draft.user || !passwordAvailable} onClick={start} type="button">启动连接</button>}</div>
     </section>
   </div>
 }

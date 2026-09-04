@@ -94,7 +94,7 @@ test('legacy single-project state migrates into its direct parent asset library'
     const state = new WorkbenchState({ statePath })
     assert.equal(await state.root(), await realpath(project))
     const stored = JSON.parse(await readFile(statePath, 'utf8'))
-    assert.equal(stored.version, 2)
+    assert.equal(stored.version, 3)
     assert.equal(stored.activeProjectId, 'my-first-01')
     assert.equal(Object.hasOwn(stored, 'projectPath'), false)
   } finally {

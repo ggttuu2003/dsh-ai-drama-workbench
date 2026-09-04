@@ -1,12 +1,12 @@
 {
-  "id": "image-generate",
-  "name": "文生图（我的 ComfyUI 工作流）",
+  "id": "image-generate-qwen",
+  "name": "Qwen Image 2512 文生图",
   "kind": "image",
-  "description": "调用 api-workflows/image-generate.api.json 中用户从 ComfyUI 导出的原始 API 工作流。",
+  "description": "Qwen Image 2512 Base 文生图，使用固定的质量优先采样参数。",
   "enabled": true,
   "model": {
-    "id": "z-image-turbo",
-    "label": "Z-Image Turbo",
+    "id": "qwen-image-2512",
+    "label": "Qwen Image 2512",
     "presetIds": [
       "character-turnaround-v1",
       "scene-image-v1",
@@ -16,17 +16,15 @@
       "shot-last-frame-v1"
     ],
     "requirements": [
-      { "nodeId": "8", "field": "unet_name" },
-      { "nodeId": "5", "field": "clip_name" },
-      { "nodeId": "12", "field": "vae_name" },
-      { "nodeId": "7", "field": "lora_name" },
-      { "nodeId": "16", "field": "model_name" }
+      { "nodeId": "248", "field": "unet_name" },
+      { "nodeId": "245", "field": "clip_name" },
+      { "nodeId": "246", "field": "vae_name" }
     ]
   },
-  "comfyPromptFile": "image-generate.api.json",
+  "comfyPromptFile": "image-generate-qwen.api.json",
   "inputMappings": {
     "prompt": {
-      "nodeId": "4",
+      "nodeId": "249",
       "field": "text",
       "type": "string",
       "required": true,
@@ -34,7 +32,7 @@
       "description": "正向提示词"
     },
     "negativePrompt": {
-      "nodeId": "9",
+      "nodeId": "250",
       "field": "text",
       "type": "string",
       "required": false,
@@ -42,7 +40,7 @@
       "description": "负向提示词"
     },
     "width": {
-      "nodeId": "10",
+      "nodeId": "252",
       "field": "width",
       "type": "integer",
       "required": false,
@@ -51,7 +49,7 @@
       "description": "输出宽度"
     },
     "height": {
-      "nodeId": "10",
+      "nodeId": "252",
       "field": "height",
       "type": "integer",
       "required": false,
@@ -60,17 +58,17 @@
       "description": "输出高度"
     },
     "seed": {
-      "nodeId": "6",
+      "nodeId": "253",
       "field": "seed",
       "type": "integer",
       "required": false,
       "min": 0,
-      "max": 2147483647,
+      "max": 9007199254740991,
       "description": "随机种子"
     }
   },
   "uploadMappings": {},
   "outputNodeIds": [
-    "17"
+    "254"
   ]
 }

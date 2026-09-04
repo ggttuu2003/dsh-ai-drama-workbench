@@ -53,8 +53,6 @@ const ASSET_SLOT_DEFINITIONS = deepFreeze({
     markerFile: '角色设定.md',
     slots: {
       turnaround: { directory: '三视图', label: '三视图', mediaKinds: ['image'] },
-      costume: { directory: '定妆', label: '定妆', mediaKinds: ['image'] },
-      reference: { directory: '参考图', label: '参考图', mediaKinds: ['image'] },
     },
   },
   scene: {
@@ -110,15 +108,6 @@ const WORKFLOW_PRESETS = deepFreeze([
     referenceImagesEnabled: false,
     defaults: { width: 1024, height: 1536 },
     output: { kind: 'image', targetSlots: [{ assetType: 'character', slot: 'turnaround' }] },
-    inputs: standardImageInputs(),
-    uploadRoles: [{ role: 'referenceImage', required: false, mediaKind: 'image' }],
-  },
-  {
-    id: 'character-costume-v1',
-    label: '人物定妆',
-    referenceImagesEnabled: false,
-    defaults: { width: 1024, height: 1536 },
-    output: { kind: 'image', targetSlots: [{ assetType: 'character', slot: 'costume' }] },
     inputs: standardImageInputs(),
     uploadRoles: [{ role: 'referenceImage', required: false, mediaKind: 'image' }],
   },
@@ -263,7 +252,6 @@ export const COMFY_WORKFLOW_PRESETS = cloneJson(WORKFLOW_PRESETS)
 // stable even when a new ComfyUI server gives the workflow a different name.
 const DEFAULT_BRIDGE_WORKFLOW_MAP = deepFreeze({
   'character-turnaround-v1': 'image-generate',
-  'character-costume-v1': 'image-generate',
   'scene-image-v1': 'image-generate',
   'scene-image-img2img-v1': 'image-to-image',
   'prop-image-v1': 'image-generate',
@@ -516,6 +504,7 @@ function normalizeWorkflowMap(value) {
   const rawMap = assertRecord(value, 'The Comfy workflow mapping must be an object.', ComfyConfigurationError)
   const map = { ...DEFAULT_BRIDGE_WORKFLOW_MAP }
   for (const [localWorkflowId, remoteWorkflowId] of Object.entries(rawMap)) {
+    if (localWorkflowId === 'character-costume-v1') continue
     if (!WORKFLOW_PRESETS.some(preset => preset.id === localWorkflowId)) {
       throw new ComfyConfigurationError(`The Comfy workflow mapping contains an unknown local preset: ${localWorkflowId}.`)
     }
@@ -902,6 +891,15 @@ function normalizeRemote(value) {
   }
 }
 
+function normalizeJobModel(value) {
+  if (value === undefined || value === null) return undefined
+  const model = assertRecord(value, 'The Comfy job model is invalid.', ComfyJobError)
+  const id = assertRemoteId(model.id, 'The Comfy job model id is invalid.', ComfyJobError)
+  const label = assertNonEmptyString(model.label, 'The Comfy job model label is invalid.', ComfyJobError, 120)
+  const remoteWorkflowId = assertRemoteId(model.remoteWorkflowId, 'The Comfy job model workflow is invalid.', ComfyJobError)
+  return { id, label, remoteWorkflowId }
+}
+
 function assertProgress(value) {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
     throw new ComfyJobError('Comfy job progress must be between 0 and 1.')
@@ -973,6 +971,7 @@ export function validateComfyJob(value) {
   const uploads = normalizeUploads(preset, job.uploads)
   const progress = job.progress === undefined ? 0 : assertProgress(job.progress)
   const remote = normalizeRemote(job.remote)
+  const model = normalizeJobModel(job.model)
   const outputs = job.outputs === undefined
     ? []
     : (() => {
@@ -993,6 +992,7 @@ export function validateComfyJob(value) {
     uploads,
     target: publicTarget(target),
     progress,
+    ...(model ? { model } : {}),
     ...(remote && Object.keys(remote).length ? { remote } : {}),
     outputs,
     history,
@@ -1016,6 +1016,7 @@ export function createComfyJob(input) {
     uploads: value.uploads ?? [],
     target: value.target,
     progress: value.progress ?? 0,
+    model: value.model,
     remote: value.remote,
     outputs: value.outputs ?? [],
     history: value.history,
@@ -1113,20 +1114,34 @@ async function assertRegularMarker(directory, fileName) {
   const markerPath = path.join(directory, fileName)
   try {
     const info = await fs.lstat(markerPath)
-    if (!info.isFile() || info.isSymbolicLink()) throw new ComfyArchiveError('The archive target is not a recognized workbench asset.')
+    if (!info.isFile() || info.isSymbolicLink()) throw new ComfyArchiveError('归档目标不是有效的工作台资产。')
   } catch (error) {
-    if (isErrno(error, 'ENOENT')) throw new ComfyArchiveError('The archive target is not a recognized workbench asset.')
+    if (isErrno(error, 'ENOENT')) throw new ComfyArchiveError('归档目标不是有效的工作台资产。')
     throw error
   }
 }
 
-export async function resolveComfyArchiveTarget(projectRoot, target) {
+async function verifyComfyArchiveTarget(projectRoot, target) {
   const root = await getVerifiedProjectRoot(projectRoot)
   const normalized = normalizeAssetTarget(target)
   const assetRelativePath = normalized.lookPath ?? normalized.assetPath
   const assetDirectory = await resolveSecureDirectory(root, assetRelativePath)
   const markerFile = normalized.lookPath ? '造型设定.md' : ASSET_SLOT_DEFINITIONS[normalized.assetType].markerFile
   await assertRegularMarker(assetDirectory, markerFile)
+  return { root, normalized, assetRelativePath, assetDirectory }
+}
+
+export async function assertComfyArchiveTarget(projectRoot, target) {
+  const { root, normalized, assetDirectory } = await verifyComfyArchiveTarget(projectRoot, target)
+  return {
+    root,
+    target: publicTarget(normalized),
+    assetDirectory,
+  }
+}
+
+export async function resolveComfyArchiveTarget(projectRoot, target) {
+  const { root, normalized, assetRelativePath, assetDirectory } = await verifyComfyArchiveTarget(projectRoot, target)
   const slotDirectory = await resolveSecureDirectory(root, joinRelativePath(assetRelativePath, normalized.slotDirectory), { create: true })
   return {
     root,
@@ -1349,6 +1364,11 @@ export function createComfyBridgeUploadRequest(profile, { fileName, body }) {
   return { url: url.toString(), method: 'POST', headers: bridgeHeaders(runnable, 'application/octet-stream'), body }
 }
 
+export function createComfyBridgeModelsRequest(profile) {
+  const runnable = assertRunnableProfileInput(profile)
+  return { url: bridgeEndpoint(runnable, 'models').toString(), method: 'GET', headers: bridgeHeaders(runnable) }
+}
+
 export function createComfyBridgeJobRequest(profile, job) {
   const runnable = assertRunnableProfileInput(profile)
   const normalizedJob = validateComfyJob(job)
@@ -1370,7 +1390,7 @@ export function createComfyBridgeJobRequest(profile, job) {
     method: 'POST',
     headers: bridgeHeaders(runnable, 'application/json'),
     body: {
-      workflowId: runnable.workflowMap[preset.id],
+      workflowId: normalizedJob.model?.remoteWorkflowId ?? runnable.workflowMap[preset.id],
       inputs: normalizedJob.inputs,
       uploads,
       clientJobId: normalizedJob.id,

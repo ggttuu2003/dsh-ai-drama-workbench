@@ -55,8 +55,8 @@ PROPOSAL_TTL_HOURS = 72
 PLANNER_LIBRARY_ROOT_ENV = "AI_DRAMA_PLANNER_LIBRARY_ROOT"
 PLANNER_ACTIVE_PROJECT_ROOT_ENV = "AI_DRAMA_PLANNER_ACTIVE_PROJECT_ROOT"
 
-CHARACTER_SLOTS = ("三视图", "定妆", "参考图")
-SCENE_SLOTS = ("场景图", "参考图", "首帧", "尾帧", "候选", "定稿", "成片")
+CHARACTER_SLOTS = ("三视图",)
+SCENE_SLOTS = ("候选", "定稿")
 SHOT_SLOTS = ("参考图", "首帧", "尾帧", "候选", "定稿", "成片")
 LOCATION_SLOTS = ("场景图", "参考图", "候选", "定稿")
 PROP_SLOTS = ("参考图", "候选", "定稿")
@@ -630,24 +630,66 @@ def normalize_reuse_items(value: Any, label: str, existing: set[str]) -> list[di
     return result
 
 
+def first_present_value(item: Mapping[str, Any], *keys: str) -> Any:
+    """Return the first supplied alias while preserving explicit empty values."""
+    for key in keys:
+        if key in item and item[key] is not None:
+            return item[key]
+    return None
+
+
 def normalize_look(raw: Any, index: int, label: str, look_id: str) -> dict[str, Any]:
     item = require_mapping(raw, f"{label} 第 {index} 项")
+    costume = read_text_value(item.get("costume"), "LOOK 服装", maximum=MAX_LONG_TEXT_CHARS, required=False)
+    hair_makeup = read_text_value(
+        item.get("hair_makeup"), "LOOK 妆发", maximum=MAX_LONG_TEXT_CHARS, required=False,
+    )
+    fixed_props = read_text_value(
+        item.get("fixed_props"), "LOOK 固定道具", maximum=MAX_LONG_TEXT_CHARS, required=False,
+    )
+    continuity = read_text_value(
+        item.get("continuity"), "LOOK 连续性", maximum=MAX_LONG_TEXT_CHARS, required=False,
+    )
+    prompt_value = first_present_value(
+        item,
+        "prompt",
+        "visual_prompt",
+        "visualPrompt",
+        "costume_prompt",
+        "costumePrompt",
+    )
+    prompt = read_text_value(prompt_value, "造型图提示词", maximum=MAX_LONG_TEXT_CHARS, required=False)
+    if not prompt:
+        visual_parts = [part for part in (costume, hair_makeup, fixed_props) if part]
+        if visual_parts:
+            prompt = (
+                "人物造型三视图，单人全身，正面、左侧面、背面三视角并列，"
+                f"{'；'.join(visual_parts)}，保持人物脸部与体态一致，干净浅色背景，无文字。"
+            )
+    negative_prompt = read_text_value(
+        first_present_value(
+            item,
+            "negative_prompt",
+            "negativePrompt",
+            "costume_negative_prompt",
+            "costumeNegativePrompt",
+        ),
+        "造型图负面提示词",
+        maximum=MAX_LONG_TEXT_CHARS,
+        required=False,
+    )
     return {
         "id": look_id,
         "name": safe_segment(item.get("name"), "LOOK 名称"),
         "applicable_story": read_text_value(
             item.get("applicable_story"), "LOOK 适用剧情", maximum=MAX_SHORT_TEXT_CHARS, required=False,
         ),
-        "costume": read_text_value(item.get("costume"), "LOOK 服装", maximum=MAX_LONG_TEXT_CHARS, required=False),
-        "hair_makeup": read_text_value(
-            item.get("hair_makeup"), "LOOK 妆发", maximum=MAX_LONG_TEXT_CHARS, required=False,
-        ),
-        "fixed_props": read_text_value(
-            item.get("fixed_props"), "LOOK 固定道具", maximum=MAX_LONG_TEXT_CHARS, required=False,
-        ),
-        "continuity": read_text_value(
-            item.get("continuity"), "LOOK 连续性", maximum=MAX_LONG_TEXT_CHARS, required=False,
-        ),
+        "costume": costume,
+        "hair_makeup": hair_makeup,
+        "fixed_props": fixed_props,
+        "continuity": continuity,
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
         "notes": read_text_value(item.get("notes"), "LOOK 备注", maximum=MAX_LONG_TEXT_CHARS, required=False),
     }
 
@@ -675,15 +717,57 @@ def normalize_new_character(raw: Any, index: int) -> dict[str, Any]:
     identity_features_input = item.get("identity_features", item.get("traits"))
     baseline_input = item.get("baseline_presentation", item.get("costume"))
     identity = read_text_value(item.get("identity"), "人物身份", maximum=MAX_LONG_TEXT_CHARS)
+    identity_baseline = read_text_value(
+        item.get("identity_baseline"), "身份基准说明", maximum=MAX_LONG_TEXT_CHARS, required=False,
+    ) or identity
+    traits = string_list(identity_features_input, "身份锁定特征", maximum=24)
+    baseline_presentation = string_list(baseline_input, "基础呈现", maximum=24)
+    turnaround_prompt = read_text_value(
+        first_present_value(
+            item,
+            "turnaround_prompt",
+            "turnaroundPrompt",
+            "three_view_prompt",
+            "threeViewPrompt",
+            "visual_prompt",
+            "visualPrompt",
+            "prompt",
+        ),
+        "人物三视图提示词",
+        maximum=MAX_LONG_TEXT_CHARS,
+        required=False,
+    )
+    if not turnaround_prompt:
+        # Keep old plans runnable while ensuring the fallback is a visual
+        # instruction rather than the complete Markdown profile.
+        visual_parts = [identity_baseline, *traits, *baseline_presentation]
+        visual_parts = [part for part in visual_parts if part]
+        turnaround_prompt = (
+            "人物三视图设定图，单人全身，正面、左侧面、背面三视角并列，"
+            f"{'；'.join(visual_parts)}，保持脸部、体态、发型与服饰一致，"
+            "中性站姿，均匀棚拍光，干净浅色背景，无文字。"
+        )
+    negative_prompt = read_text_value(
+        first_present_value(
+            item,
+            "negative_prompt",
+            "negativePrompt",
+            "turnaround_negative_prompt",
+            "turnaroundNegativePrompt",
+        ),
+        "人物三视图负面提示词",
+        maximum=MAX_LONG_TEXT_CHARS,
+        required=False,
+    )
     return {
         "name": safe_segment(item.get("name"), "人物名称"),
         "role_category": category,
         "identity": identity,
-        "identity_baseline": read_text_value(
-            item.get("identity_baseline"), "身份基准说明", maximum=MAX_LONG_TEXT_CHARS, required=False,
-        ) or identity,
-        "traits": string_list(identity_features_input, "身份锁定特征", maximum=24),
-        "baseline_presentation": string_list(baseline_input, "基础呈现", maximum=24),
+        "identity_baseline": identity_baseline,
+        "traits": traits,
+        "baseline_presentation": baseline_presentation,
+        "turnaround_prompt": turnaround_prompt,
+        "negative_prompt": negative_prompt,
         "notes": read_text_value(item.get("notes"), "人物备注", maximum=MAX_LONG_TEXT_CHARS, required=False),
         "looks": looks,
     }
@@ -903,6 +987,10 @@ def normalize_new_scene(raw: Any, index: int) -> dict[str, Any]:
         "summary": read_text_value(item.get("summary"), "场次概要", maximum=MAX_LONG_TEXT_CHARS),
         "mood": read_text_value(item.get("mood"), "场次氛围", maximum=MAX_LONG_TEXT_CHARS, required=False),
         "continuity": read_text_value(item.get("continuity"), "场次连续性", maximum=MAX_LONG_TEXT_CHARS, required=False),
+        "prompt": read_text_value(item.get("prompt"), "场次提示词", maximum=MAX_LONG_TEXT_CHARS, required=False),
+        "negative_prompt": read_text_value(
+            item.get("negative_prompt"), "场次负面提示词", maximum=MAX_LONG_TEXT_CHARS, required=False,
+        ),
         "character_refs": string_list(item.get("character_refs"), "场次人物引用", maximum=40),
         "location_refs": location_refs,
         "prop_refs": prop_refs,
@@ -1206,24 +1294,24 @@ def proposal_paths(plan: dict[str, Any]) -> list[str]:
     paths: list[str] = []
     for character in plan["new_characters"]:
         base = f"主要人物/{character['name']}"
-        paths.extend([f"{base}/角色设定.md", *(f"{base}/{slot}/" for slot in CHARACTER_SLOTS)])
+        paths.extend([f"{base}/角色设定.md", f"{base}/角色设定.json", *(f"{base}/{slot}/" for slot in CHARACTER_SLOTS)])
         for look in character["looks"]:
             look_base = f"{base}/{CHARACTER_LOOK_DIRECTORY}/{look['id']}-{look['name']}"
-            paths.extend([f"{look_base}/{CHARACTER_LOOK_DOCUMENT}", *(f"{look_base}/{slot}/" for slot in CHARACTER_SLOTS)])
+            paths.extend([f"{look_base}/{CHARACTER_LOOK_DOCUMENT}", f"{look_base}/造型设定.json", *(f"{look_base}/{slot}/" for slot in CHARACTER_SLOTS)])
     for addition in plan["look_additions"]:
         base = f"{addition['character_path']}/{CHARACTER_LOOK_DIRECTORY}"
         for look in addition["looks"]:
             look_base = f"{base}/{look['id']}-{look['name']}"
-            paths.extend([f"{look_base}/{CHARACTER_LOOK_DOCUMENT}", *(f"{look_base}/{slot}/" for slot in CHARACTER_SLOTS)])
+            paths.extend([f"{look_base}/{CHARACTER_LOOK_DOCUMENT}", f"{look_base}/造型设定.json", *(f"{look_base}/{slot}/" for slot in CHARACTER_SLOTS)])
     for location in plan["new_locations"]:
         base = f"场景/{location['name']}"
-        paths.extend([f"{base}/场景设定.md", *(f"{base}/{slot}/" for slot in LOCATION_SLOTS)])
+        paths.extend([f"{base}/场景设定.md", f"{base}/场景设定.json", *(f"{base}/{slot}/" for slot in LOCATION_SLOTS)])
     for prop in plan["new_props"]:
         base = f"道具/{prop['name']}"
-        paths.extend([f"{base}/道具设定.md", *(f"{base}/{slot}/" for slot in PROP_SLOTS)])
+        paths.extend([f"{base}/道具设定.md", f"{base}/道具设定.json", *(f"{base}/{slot}/" for slot in PROP_SLOTS)])
     for scene in plan["new_scenes"]:
         base = f"分镜/{scene['scene_id']}"
-        paths.extend([f"{base}/场次.md", f"{base}/{SCENE_CAST_DOCUMENT}", f"{base}/{SCENE_ASSET_DOCUMENT}", *(f"{base}/{slot}/" for slot in SCENE_SLOTS)])
+        paths.extend([f"{base}/场次.md", f"{base}/场次.json", f"{base}/{SCENE_CAST_DOCUMENT}", f"{base}/{SCENE_ASSET_DOCUMENT}", *(f"{base}/{slot}/" for slot in SCENE_SLOTS)])
         for shot in scene["shots"]:
             shot_base = f"{base}/{shot['id']}-{shot['title']}"
             paths.extend([
@@ -1407,6 +1495,42 @@ def stage_proposal(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def create_assets(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Validate and immediately commit a user-requested asset plan.
+
+    The staged proposal remains the validation and transactional source of
+    truth. This operation is exposed separately from preview mode, so its
+    caller is the authorization boundary for an explicit create request.
+    """
+    staged = stage_proposal(arguments)
+    proposal_id = staged["proposal_id"]
+    try:
+        applied = apply_proposal({
+            "proposal_id": proposal_id,
+            "confirmation": staged["confirmation_phrase"],
+        })
+    except BaseException:
+        # Direct-create callers have no proposal UI to revisit after a failure.
+        try:
+            proposal_file(proposal_id).unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    # Preview mode keeps proposals for review; direct-create mode should not
+    # leave a user-invisible draft behind after its transaction has finished.
+    try:
+        proposal_file(proposal_id).unlink(missing_ok=True)
+    except OSError:
+        pass
+    return {
+        **applied,
+        "summary": staged["summary"],
+        "planned_path_count": staged["planned_path_count"],
+        "warnings": staged["warnings"],
+        "message": "已校验并创建真实资产目录、设计 JSON 和 Markdown；没有生成图片或视频。",
+    }
+
+
 def markdown_list(items: list[str], empty: str = "未补充") -> str:
     return "\n".join(f"- {item}" for item in items) if items else f"- {empty}"
 
@@ -1416,6 +1540,26 @@ def write_markdown(target: Path, content: str) -> None:
     # pathlib.Path.write_text lacks the newline argument on older Python builds.
     with target.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(content.rstrip() + "\n")
+
+
+def write_document_pair(
+    markdown_target: Path,
+    json_target: Path,
+    kind: str,
+    content: str,
+    prompt: str = "",
+    negative_prompt: str = "",
+) -> None:
+    """Write Markdown plus a JSON sidecar whose content mirrors it exactly."""
+    safe_content = content.rstrip() + "\n"
+    write_markdown(markdown_target, safe_content)
+    atomic_write_json(json_target, {
+        "version": 1,
+        "type": kind,
+        "prompt": prompt,
+        "negativePrompt": negative_prompt,
+        "content": safe_content,
+    })
 
 
 def create_slots(directory: Path, slots: tuple[str, ...]) -> None:
@@ -1444,9 +1588,17 @@ def character_document(character: dict[str, Any], proposal_id: str) -> str:
 
 {markdown_list(character['baseline_presentation'])}
 
-## 旧资料槽兼容
+## 三视图提示词
 
-根目录保留 `三视图/`、`定妆/`、`参考图/` 三个旧资料槽，作为身份基准的候选视觉；每个具体造型另在 `造型/` 下拥有独立的同类资料槽。
+{character.get('turnaround_prompt', '')}
+
+## 三视图负面提示词
+
+{character.get('negative_prompt', '')}
+
+## 视觉资料
+
+人物身份基准只保留 `三视图/` 资料槽；具体造型也只在各自的 `三视图/` 资料槽中保存视觉素材。
 
 ## 制作备注
 
@@ -1472,9 +1624,17 @@ def look_document(character: dict[str, Any], look: dict[str, Any], proposal_id: 
 - **固定道具：** {look['fixed_props'] or '待补充'}
 - **连续性：** {look['continuity'] or '待补充'}
 
+## 三视图提示词
+
+{look.get('prompt', '')}
+
+## 三视图负面提示词
+
+{look.get('negative_prompt', '')}
+
 ## 制作备注
 
-{look['notes'] or '三视图、定妆和参考图资料槽保持为空，等待真实素材。'}
+{look['notes'] or '三视图资料槽保持为空，等待真实素材。'}
 """
 
 
@@ -1553,6 +1713,14 @@ def scene_document(scene: dict[str, Any], proposal_id: str) -> str:
 
 {scene['continuity'] or '待补充。'}
 
+## 提示词
+
+{scene.get('prompt', '')}
+
+## 负面提示词
+
+{scene.get('negative_prompt', '')}
+
 ## 引用资产
 
 - **人物：** {'、'.join(scene['character_refs']) or '未指定'}
@@ -1561,7 +1729,7 @@ def scene_document(scene: dict[str, Any], proposal_id: str) -> str:
 
 ## 资料槽说明
 
-场景图、参考图、首帧、尾帧、候选、定稿和成片目录均保持为空，等待真实生产素材。
+场次只保留候选和定稿；首帧、尾帧及成片属于分镜生产，不放在场次目录。
 """
 
 
@@ -1754,7 +1922,15 @@ def build_stage_tree(stage: Path, proposal: dict[str, Any]) -> list[dict[str, st
     for character in plan["new_characters"]:
         directory = stage / "主要人物" / character["name"]
         directory.mkdir(parents=True, exist_ok=False)
-        write_markdown(directory / "角色设定.md", character_document(character, proposal_id))
+        character_content = character_document(character, proposal_id)
+        write_document_pair(
+            directory / "角色设定.md",
+            directory / "角色设定.json",
+            "character",
+            character_content,
+            character["turnaround_prompt"],
+            character["negative_prompt"],
+        )
         create_slots(directory, CHARACTER_SLOTS)
         if character["looks"]:
             look_root = directory / CHARACTER_LOOK_DIRECTORY
@@ -1762,7 +1938,15 @@ def build_stage_tree(stage: Path, proposal: dict[str, Any]) -> list[dict[str, st
             for look in character["looks"]:
                 look_directory = look_root / f"{look['id']}-{look['name']}"
                 look_directory.mkdir(exist_ok=False)
-                write_markdown(look_directory / CHARACTER_LOOK_DOCUMENT, look_document(character, look, proposal_id))
+                look_content = look_document(character, look, proposal_id)
+                write_document_pair(
+                    look_directory / CHARACTER_LOOK_DOCUMENT,
+                    look_directory / "造型设定.json",
+                    "look",
+                    look_content,
+                    look["prompt"],
+                    look["negative_prompt"],
+                )
                 create_slots(look_directory, CHARACTER_SLOTS)
         targets.append({
             "stage_rel": directory.relative_to(stage).as_posix(),
@@ -1780,7 +1964,15 @@ def build_stage_tree(stage: Path, proposal: dict[str, Any]) -> list[dict[str, st
         for look in addition["looks"]:
             look_directory = look_root / f"{look['id']}-{look['name']}"
             look_directory.mkdir(exist_ok=False)
-            write_markdown(look_directory / CHARACTER_LOOK_DOCUMENT, look_document(character_stub, look, proposal_id))
+            look_content = look_document(character_stub, look, proposal_id)
+            write_document_pair(
+                look_directory / CHARACTER_LOOK_DOCUMENT,
+                look_directory / "造型设定.json",
+                "look",
+                look_content,
+                look["prompt"],
+                look["negative_prompt"],
+            )
             create_slots(look_directory, CHARACTER_SLOTS)
             target_rel = f"{addition['character_path']}/{CHARACTER_LOOK_DIRECTORY}/{look_directory.name}"
             targets.append({
@@ -1790,7 +1982,15 @@ def build_stage_tree(stage: Path, proposal: dict[str, Any]) -> list[dict[str, st
     for location in plan["new_locations"]:
         directory = stage / "场景" / location["name"]
         directory.mkdir(parents=True, exist_ok=False)
-        write_markdown(directory / "场景设定.md", location_document(location, proposal_id))
+        location_content = location_document(location, proposal_id)
+        write_document_pair(
+            directory / "场景设定.md",
+            directory / "场景设定.json",
+            "location",
+            location_content,
+            location["prompt"],
+            location["negative_prompt"],
+        )
         create_slots(directory, LOCATION_SLOTS)
         targets.append({
             "stage_rel": directory.relative_to(stage).as_posix(),
@@ -1799,7 +1999,15 @@ def build_stage_tree(stage: Path, proposal: dict[str, Any]) -> list[dict[str, st
     for prop in plan["new_props"]:
         directory = stage / "道具" / prop["name"]
         directory.mkdir(parents=True, exist_ok=False)
-        write_markdown(directory / "道具设定.md", prop_document(prop, proposal_id))
+        prop_content = prop_document(prop, proposal_id)
+        write_document_pair(
+            directory / "道具设定.md",
+            directory / "道具设定.json",
+            "prop",
+            prop_content,
+            prop["prompt"],
+            prop["negative_prompt"],
+        )
         create_slots(directory, PROP_SLOTS)
         targets.append({
             "stage_rel": directory.relative_to(stage).as_posix(),
@@ -1808,7 +2016,15 @@ def build_stage_tree(stage: Path, proposal: dict[str, Any]) -> list[dict[str, st
     for scene in plan["new_scenes"]:
         directory = stage / "分镜" / scene["scene_id"]
         directory.mkdir(parents=True, exist_ok=False)
-        write_markdown(directory / "场次.md", scene_document(scene, proposal_id))
+        scene_content = scene_document(scene, proposal_id)
+        write_document_pair(
+            directory / "场次.md",
+            directory / "场次.json",
+            "scene",
+            scene_content,
+            scene["prompt"],
+            scene["negative_prompt"],
+        )
         write_markdown(directory / SCENE_CAST_DOCUMENT, scene_cast_document(scene))
         write_markdown(directory / SCENE_ASSET_DOCUMENT, scene_asset_document(scene))
         create_slots(directory, SCENE_SLOTS)
@@ -2126,7 +2342,7 @@ def input_schema() -> list[dict[str, Any]]:
     return [
         {
             "name": "inspect_ai_drama_project",
-            "description": "只读扫描 AI 漫剧项目的人物、场次、镜头、场景和道具，返回项目指纹。不会创建或修改文件。",
+            "description": "只读扫描 AI 漫剧项目的人物、场次、分镜、场景和道具，返回项目指纹。不会创建或修改文件。",
             "inputSchema": {
                 "type": "object",
                 "properties": {"project_path": {"type": "string", "description": "用户明确指定的项目绝对路径。"}},
@@ -2143,6 +2359,21 @@ def input_schema() -> list[dict[str, Any]]:
                     "project_path": {"type": "string"},
                     "project_fingerprint": {"type": "string", "description": "inspect 返回的 project_fingerprint。"},
                     "novel_excerpt": {"type": "string", "description": "用户提供的小说或剧本片段，仅用于记录提案来源摘要。"},
+                    "plan": {"type": "object", "description": "使用 ai-drama-planner 技能中的 new_* / reuse_* / look_additions 计划结构。"},
+                },
+                "required": ["project_path", "project_fingerprint", "novel_excerpt", "plan"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "create_ai_drama_assets",
+            "description": "用户明确要求创建小说资产时使用。先校验计划，再在同一次调用中以可回滚事务写入人物、场景、道具、场次和分镜；不会生成图片或视频。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project_path": {"type": "string"},
+                    "project_fingerprint": {"type": "string", "description": "inspect 返回的 project_fingerprint。"},
+                    "novel_excerpt": {"type": "string", "description": "用户提供的小说或剧本片段，仅用于记录资产来源摘要。"},
                     "plan": {"type": "object", "description": "使用 ai-drama-planner 技能中的 new_* / reuse_* / look_additions 计划结构。"},
                 },
                 "required": ["project_path", "project_fingerprint", "novel_excerpt", "plan"],
@@ -2201,6 +2432,8 @@ def call_tool(name: str, arguments: Any) -> dict[str, Any]:
             return tool_result({"ok": True, **scan_project(root)})
         if name == "stage_ai_drama_proposal":
             return tool_result(stage_proposal(params))
+        if name == "create_ai_drama_assets":
+            return tool_result(create_assets(params))
         if name == "get_ai_drama_proposal":
             return tool_result(get_proposal(params))
         if name == "apply_ai_drama_proposal":

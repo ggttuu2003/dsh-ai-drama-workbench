@@ -48,6 +48,8 @@ PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 IMAGE_OUTPUT_EXTENSIONS = {".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
 VIDEO_OUTPUT_EXTENSIONS = {".mkv", ".mov", ".mp4", ".webm"}
+MAX_MODEL_PRESET_IDS = 32
+MAX_MODEL_REQUIREMENTS = 16
 
 
 class ApiError(Exception):
@@ -598,6 +600,40 @@ def validate_workflow(workflow: Any, source_name: str) -> None:
                 break
             current = str(fallback)
 
+    model = workflow.get("model")
+    if model is None:
+        return
+    if not isinstance(model, dict):
+        raise ValueError(f"Workflow {workflow_id} model must be an object")
+    model_id = model.get("id")
+    label = model.get("label")
+    if not isinstance(model_id, str) or not ID_RE.fullmatch(model_id):
+        raise ValueError(f"Workflow {workflow_id} model requires a valid id")
+    if not isinstance(label, str) or not label.strip() or len(label) > 120:
+        raise ValueError(f"Workflow {workflow_id} model requires a valid label")
+    preset_ids = model.get("presetIds")
+    if not isinstance(preset_ids, list) or not preset_ids or len(preset_ids) > MAX_MODEL_PRESET_IDS:
+        raise ValueError(f"Workflow {workflow_id} model requires presetIds")
+    if len(set(preset_ids)) != len(preset_ids) or not all(
+        isinstance(item, str) and ID_RE.fullmatch(item) for item in preset_ids
+    ):
+        raise ValueError(f"Workflow {workflow_id} model presetIds are invalid")
+    requirements = model.get("requirements", [])
+    if not isinstance(requirements, list) or len(requirements) > MAX_MODEL_REQUIREMENTS:
+        raise ValueError(f"Workflow {workflow_id} model requirements are invalid")
+    for requirement in requirements:
+        if not isinstance(requirement, dict):
+            raise ValueError(f"Workflow {workflow_id} model requirements are invalid")
+        node_id = str(requirement.get("nodeId", ""))
+        field = requirement.get("field")
+        if node_id not in workflow["comfyPrompt"] or not isinstance(field, str) or not field:
+            raise ValueError(f"Workflow {workflow_id} model requirement targets are invalid")
+        node = workflow["comfyPrompt"][node_id]
+        if not isinstance(node, dict) or not isinstance(node.get("inputs"), dict):
+            raise ValueError(f"Workflow {workflow_id} model requirement node is invalid")
+        if field not in node["inputs"] or not isinstance(node["inputs"][field], str):
+            raise ValueError(f"Workflow {workflow_id} model requirement must target a static model name")
+
 
 def public_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
     """Expose only the caller contract, never the full Comfy node graph."""
@@ -610,6 +646,20 @@ def public_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
         "enabled": bool(workflow.get("enabled", True)),
         "inputMappings": workflow.get("inputMappings", {}),
         "uploadMappings": workflow.get("uploadMappings", {}),
+    }
+
+
+def public_model(workflow: dict[str, Any], available: bool, reason: str | None = None) -> dict[str, Any]:
+    """Expose an executable model variant without leaking raw graph details."""
+
+    model = workflow["model"]
+    return {
+        "id": model["id"],
+        "label": model["label"],
+        "workflowId": workflow["id"],
+        "presetIds": model["presetIds"],
+        "available": available,
+        **({"reason": reason} if reason else {}),
     }
 
 
@@ -870,6 +920,21 @@ class ComfyClient:
             return True
         except ComfyApiError:
             return False
+
+    def input_choices(self, node_class: str, field: str) -> set[str]:
+        """Read one loader's current choices without exposing ComfyUI to clients."""
+
+        definition = self.request_json("GET", f"/object_info/{quote(node_class, safe='')}")
+        node = definition.get(node_class)
+        if not isinstance(node, dict):
+            raise ComfyApiError(f"ComfyUI did not describe node {node_class}")
+        inputs = node.get("input")
+        required = inputs.get("required") if isinstance(inputs, dict) else None
+        descriptor = required.get(field) if isinstance(required, dict) else None
+        choices = descriptor[0] if isinstance(descriptor, list) and descriptor else None
+        if not isinstance(choices, list):
+            raise ComfyApiError(f"ComfyUI did not describe choices for {node_class}.{field}")
+        return {item for item in choices if isinstance(item, str)}
 
     def upload_image(self, file_path: Path, remote_name: str, subfolder: str) -> str:
         boundary = f"----ComfyBridge{secrets.token_hex(16)}"
@@ -1139,6 +1204,38 @@ class BridgeApp:
 
     def list_workflows(self) -> dict[str, Any]:
         return {"workflows": [public_workflow(item) for item in self.workflows.values()]}
+
+    def list_models(self) -> dict[str, Any]:
+        """Return only declared model variants whose required files still exist."""
+
+        models: list[dict[str, Any]] = []
+        choices_cache: dict[tuple[str, str], set[str]] = {}
+        for workflow in self.workflows.values():
+            if not workflow.get("enabled", True) or not isinstance(workflow.get("model"), dict):
+                continue
+            available = True
+            reason: str | None = None
+            if self.settings.mode == "live":
+                try:
+                    for requirement in workflow["model"].get("requirements", []):
+                        node_id = str(requirement["nodeId"])
+                        field = requirement["field"]
+                        node = workflow["comfyPrompt"][node_id]
+                        node_class = node["class_type"]
+                        key = (node_class, field)
+                        choices = choices_cache.get(key)
+                        if choices is None:
+                            choices = self.comfy.input_choices(node_class, field)
+                            choices_cache[key] = choices
+                        if node["inputs"][field] not in choices:
+                            available = False
+                            reason = "所需模型组件未安装"
+                            break
+                except ComfyApiError:
+                    available = False
+                    reason = "无法读取服务器模型"
+            models.append(public_model(workflow, available, reason))
+        return {"models": models}
 
     def receive_upload(
         self, raw_file_name: str, content_type: str, content_length: int, stream: Any
@@ -1590,6 +1687,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/workflows":
             self._send_json(200, self.app.list_workflows())
+            return
+        if path == "/models":
+            self._send_json(200, self.app.list_models())
             return
         job_match = re.fullmatch(r"/jobs/([^/]+)", path)
         if job_match:

@@ -125,7 +125,7 @@ const MAX_UPLOAD_FILE_BYTES = 200 * 1024 * 1024;
 const MAX_UPLOAD_TOTAL_BYTES = 500 * 1024 * 1024;
 const WORKBENCH_API_BASE = "/ai-drama/workbench";
 const SELECTED_VISUAL_SUFFIX = /(?:-|_)已选$/u;
-const SELECTABLE_VISUAL_SLOTS = new Set(["turnaround", "costume", "reference", "setting", "firstFrame", "lastFrame", "candidate"]);
+const SELECTABLE_VISUAL_SLOTS = new Set(["turnaround", "setting", "firstFrame", "lastFrame", "candidate"]);
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -202,7 +202,7 @@ function hasSingleSelectedSlotVisual(asset: { slots: AssetSlot[] }, key: string)
 }
 
 function isCharacterVisualSlotKey(slotKey: string): slotKey is CharacterVisualSlotKey {
-  return slotKey === "turnaround" || slotKey === "costume" || slotKey === "reference";
+  return slotKey === "turnaround";
 }
 
 type WorkspaceSelectionAsset = CharacterAsset | LocationAsset | PropAsset | SceneAsset | ShotAsset;
@@ -244,8 +244,6 @@ function bindingReferencesAsset(binding: SceneAssetBinding, asset: LocationAsset
 
 const CHARACTER_VISUAL_SLOT_LABELS: Record<CharacterVisualSlotKey, string> = {
   turnaround: "三视图",
-  costume: "定妆",
-  reference: "参考图",
 };
 
 type CharacterVisual = {
@@ -292,7 +290,7 @@ function characterVisualSources(asset: CharacterAsset): CharacterVisualSource[] 
 
 function selectedCharacterVisuals(source: CharacterVisualSource): CharacterVisual[] {
   const visuals: CharacterVisual[] = [];
-  for (const slot of ["turnaround", "costume", "reference"] as const) {
+  for (const slot of ["turnaround"] as const) {
     const file = source.confirmedVisuals[slot];
     if (!file || !isImage(file)) continue;
     visuals.push({ slot, label: CHARACTER_VISUAL_SLOT_LABELS[slot], file });
@@ -346,7 +344,7 @@ function assetKey(asset: WorkspaceSelectionAsset): string {
 }
 
 function displayShotTitle(shot: ShotAsset): string {
-  return shot.design.title || "未命名镜头";
+  return shot.design.title || "未命名分镜";
 }
 
 function storyboardImportSelector(shot: ShotAsset): string {
@@ -585,7 +583,7 @@ function SceneAssetCard({
 }) {
   return (
     <button
-      aria-label={`场次 ${scene.sceneId}，${scene.shotCount} 个镜头`}
+      aria-label={`场次 ${scene.sceneId}，${scene.shotCount} 个分镜`}
       aria-current={active ? "true" : undefined}
       className={`scene-asset-card ${active ? "is-active" : ""}`}
       onClick={onClick}
@@ -594,7 +592,7 @@ function SceneAssetCard({
       <span aria-hidden="true" className="scene-asset-card-mark">场</span>
       <span className="scene-asset-card-copy">
         <strong>{scene.sceneId}</strong>
-        <em>{scene.shotCount} 个镜头</em>
+        <em>{scene.shotCount} 个分镜</em>
       </span>
     </button>
   );
@@ -646,7 +644,7 @@ function ShotWorkflowStepper({
   nodes: ShotWorkflowNode[];
   onSelect: (step: ShotWorkflowStepId) => void | Promise<void>;
 }) {
-  return <nav aria-label="当前镜头制作流程" className="storyboard-stepper">
+  return <nav aria-label="当前分镜制作流程" className="storyboard-stepper">
     {nodes.map((node, index) => <button
       aria-current={activeStep === node.id ? "step" : undefined}
       className={`storyboard-step is-${node.state}`}
@@ -750,7 +748,7 @@ function normalizeAssemblyData(value: unknown): AssemblyData {
       shotPath: item.shotPath,
       sceneId: item.sceneId,
       shotId: item.shotId,
-      title: typeof item.title === "string" ? item.title : "未命名镜头",
+      title: typeof item.title === "string" ? item.title : "未命名分镜",
       choices,
       ...(validSelectedPath ? { defaultVideoPath: validSelectedPath } : {}),
     }];
@@ -799,7 +797,7 @@ function AssemblyPage({
     <header className="assembly-page-heading">
       <div>
         <p className="eyebrow">成片</p>
-        <h3 id="assembly-title">镜头视频 {readyCount}/{shots.length}</h3>
+        <h3 id="assembly-title">分镜视频 {readyCount}/{shots.length}</h3>
       </div>
       <div className="assembly-page-actions">
         <button className="text-button" disabled={busy || loading} onClick={onRefresh} type="button">刷新</button>
@@ -807,7 +805,7 @@ function AssemblyPage({
       </div>
     </header>
     {error ? <div className="assembly-error" role="alert">{error}</div> : null}
-    {loading && !data ? <div className="assembly-empty">正在读取镜头视频…</div> : shots.length ? <div className="assembly-shot-list">
+    {loading && !data ? <div className="assembly-empty">正在读取分镜视频…</div> : shots.length ? <div className="assembly-shot-list">
       {shots.map((shot, index) => {
         const selectedPath = selections[shot.shotPath] || shot.defaultVideoPath || "";
         const selected = shot.choices.find((choice) => choice.path === selectedPath) || shot.choices[0];
@@ -825,8 +823,8 @@ function AssemblyPage({
           </div>
         </article>;
       })}
-    </div> : <div className="assembly-empty">完成镜头视频后可合并</div>}
-    {missingCount > 0 ? <p className="assembly-missing-count">缺少 {missingCount} 个镜头视频</p> : null}
+    </div> : <div className="assembly-empty">完成分镜视频后可合并</div>}
+    {missingCount > 0 ? <p className="assembly-missing-count">缺少 {missingCount} 个分镜视频</p> : null}
     {data?.outputs?.length ? <section className="assembly-history" aria-label="历史总片">
       <div className="assembly-history-heading"><strong>历史总片</strong><small>{data.outputs.length}</small></div>
       <div className="assembly-history-list">{data.outputs.map((file) => <article className="assembly-history-item" key={file.path}>
@@ -1513,7 +1511,28 @@ function ProjectStructureViewer({
 }
 
 function ProfilePreview({ content }: { content: string }) {
-  const lines = content.split(/\r?\n/);
+  const lines: string[] = [];
+  let hiddenSectionLevel = 0;
+  for (const line of content.split(/\r?\n/)) {
+    const heading = line.trim().match(/^(#{1,6})\s+(.+?)\s*#?\s*$/u);
+    if (heading) {
+      const headingLevel = heading[1].length;
+      const headingTitle = heading[2]
+        .replace(/[：:]\s*$/u, "")
+        .trim()
+        .toLocaleLowerCase("zh-Hans-CN");
+      if (hiddenSectionLevel && headingLevel <= hiddenSectionLevel) {
+        hiddenSectionLevel = 0;
+      }
+      if (headingTitle === "旧资料槽兼容" || headingTitle === "legacy visual slots") {
+        hiddenSectionLevel = headingLevel;
+        continue;
+      }
+    }
+    if (hiddenSectionLevel) continue;
+    if (/^(?:资产类型|asset type)\s*[：:]\s*电影角色定妆与身份参考\s*$/u.test(line.trim())) continue;
+    lines.push(line);
+  }
   const cleanInline = (value: string) => value.replace(/\*\*/g, "").replace(/`/g, "");
 
   if (!content.trim()) {
@@ -1552,7 +1571,7 @@ function DraftSummary({ design }: { design: ShotDesign }) {
     ["景别 / 机位", design.framing],
   ] as const;
   return (
-    <section className="draft-summary" aria-label="镜头草稿摘要">
+    <section className="draft-summary" aria-label="分镜草稿摘要">
         <dl className="draft-summary-grid">
         {items.map(([label, value]) => <div className="draft-summary-item" key={label}><dt>{label}</dt><dd>{value || "未填写"}</dd></div>)}
       </dl>
@@ -1576,10 +1595,10 @@ function ShotDesignPreview({ design }: { design: ShotDesign }) {
     ["时长", design.duration],
     ["景别 / 机位", design.framing],
   ] as const;
-  return <div aria-label="镜头设计预览" className="shot-design-preview">
+  return <div aria-label="分镜设计预览" className="shot-design-preview">
     <div className="shot-design-preview-main">
       <span className="shot-design-preview-label">画面描述</span>
-      <p>{primaryText || "暂无镜头描述"}</p>
+      <p>{primaryText || "暂无分镜描述"}</p>
     </div>
     <dl className="shot-design-preview-meta">
       {meta.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || "未填写"}</dd></div>)}
@@ -1614,10 +1633,20 @@ type ComfyPreset = {
   inputs?: Array<{ key: string; type: "string" | "integer" | "number" }>;
 };
 
+type ComfyModel = {
+  id: string;
+  label: string;
+  workflowId: string;
+  presetIds: string[];
+  available: boolean;
+  reason?: string;
+};
+
 type ComfyJob = {
   id: string;
   status: string;
   presetLabel?: string;
+  modelLabel?: string;
   createdAt?: string;
   updatedAt?: string;
   message?: string;
@@ -1691,6 +1720,11 @@ function GenerationModal({
   const [activeProfileId, setActiveProfileId] = useState("");
   const [presets, setPresets] = useState<ComfyPreset[]>([]);
   const [presetId, setPresetId] = useState("");
+  const [models, setModels] = useState<ComfyModel[]>([]);
+  const [modelId, setModelId] = useState("");
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const [loadedModelContext, setLoadedModelContext] = useState("");
   const [jobs, setJobs] = useState<ComfyJob[]>([]);
   const [preview, setPreview] = useState<ComfyPreview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1735,7 +1769,14 @@ function GenerationModal({
     ? availablePresets.find((preset) => preset.id === lockedPresetId)
     : availablePresets.find((preset) => preset.id === presetId) ?? availablePresets[0];
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId);
+  const modelContextKey = activePreset && activeProfileId ? `${activeProfileId}\u0000${activePreset.id}` : "";
+  const selectedModel = models.find((model) => model.id === modelId && model.available);
   const isVideo = activePreset?.outputKind === "video";
+  const requiresModel = activePreset?.outputKind === "image";
+  const profileReady = Boolean(activeProfile?.enabled && activeProfile?.configured);
+  const modelReady = !requiresModel || Boolean(
+    selectedModel && loadedModelContext === modelContextKey,
+  );
   const isFrameImageToImage = Boolean(frameGeneration && frameMode === "imageToImage");
   // Older presets expose a single LoadImage input. A multi-reference preset
   // advertises its limit explicitly; keep one as the safe default for older
@@ -1789,6 +1830,8 @@ function GenerationModal({
     }
   }, [availablePresets, frameGeneration, frameMode, loading, presets.length]);
 
+  // Model selection changes the remote graph, not the asset-derived prompt.
+  // Keep a user-edited prompt intact for an apples-to-apples A/B comparison.
   const promptInitializationKey = activePreset
     ? [projectId || "", asset.type, assetPath, lookPath || "", activePreset.id].join("\u0000")
     : "";
@@ -1797,6 +1840,7 @@ function GenerationModal({
     assetPath,
     ...(asset.type === "character" && lookPath ? { lookPath } : {}),
     presetId: activePreset?.id,
+    ...(selectedModel ? { modelId: selectedModel.id } : {}),
     ...(projectId ? { projectId } : {}),
     options: {
       useReferenceImages: Boolean(activePreset?.referenceImagesEnabled),
@@ -1808,7 +1852,7 @@ function GenerationModal({
           : { referenceImagePath: selectedReferencePath }),
       } : {}),
     },
-  }), [activePreset?.id, activePreset?.maxReferenceImages, activePreset?.referenceImageRoles, activePreset?.referenceImagesEnabled, asset.type, assetPath, isFrameImageToImage, lookPath, projectId, selectedReferenceImages, selectedReferencePath, supportsMultipleReferences]);
+  }), [activePreset?.id, activePreset?.maxReferenceImages, activePreset?.referenceImageRoles, activePreset?.referenceImagesEnabled, asset.type, assetPath, isFrameImageToImage, lookPath, projectId, selectedModel?.id, selectedReferenceImages, selectedReferencePath, supportsMultipleReferences]);
 
   useEffect(() => {
     document.body.dataset.aiDramaGeneration = "open";
@@ -1870,12 +1914,52 @@ function GenerationModal({
   }, [asset.type, assetPath, initialDurationSeconds, initialRequestedPresetId, onJobsObserved, request]);
 
   useEffect(() => { void reload(); }, [reload]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!requiresModel || !activePreset || !activeProfileId || !activeProfile?.enabled || !activeProfile.configured) {
+      setModels([]);
+      setModelId("");
+      setModelsLoading(false);
+      setModelsError(requiresModel ? "先连接服务器" : null);
+      setLoadedModelContext(modelContextKey);
+      return () => { cancelled = true; };
+    }
+    setModelsLoading(true);
+    setModelsError(null);
+    setLoadedModelContext("");
+    void request<{ models: ComfyModel[]; defaultModelId?: string }>(`/models?profileId=${encodeURIComponent(activeProfileId)}&presetId=${encodeURIComponent(activePreset.id)}`)
+      .then((response) => {
+        if (cancelled) return;
+        const available = response.models.filter((model) => model.available);
+        setModels(available);
+        setModelId((current) => (
+          available.some((model) => model.id === current)
+            ? current
+            : available.find((model) => model.id === response.defaultModelId)?.id ?? available[0]?.id ?? ""
+        ));
+        setModelsError(available.length ? null : response.models[0]?.reason || "此方式暂无可用模型");
+        setLoadedModelContext(modelContextKey);
+      })
+      .catch((reason) => {
+        if (cancelled) return;
+        setModels([]);
+        setModelId("");
+        setModelsError(reason instanceof Error ? reason.message : "无法读取模型");
+        setLoadedModelContext(modelContextKey);
+      })
+      .finally(() => {
+        if (!cancelled) setModelsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [activePreset, activeProfile?.configured, activeProfile?.enabled, activeProfileId, modelContextKey, request, requiresModel]);
+
   // A preflight result is tied to the exact server, preset, and parameter
   // values that produced it. Any edit invalidates that result so a stale
   // approval cannot be submitted accidentally.
   useEffect(() => {
     setPreview(null);
-  }, [activeProfileId, activePreset?.id, denoise, durationSeconds, frameMode, frames, fps, height, negativePromptDraft, promptDraft, referenceImagePaths, seed, width]);
+  }, [activeProfileId, activePreset?.id, denoise, durationSeconds, frameMode, frames, fps, height, modelId, negativePromptDraft, promptDraft, referenceImagePaths, seed, width]);
   useEffect(() => {
     if (!assetPath || !hasActiveJobs) return undefined;
     const timer = window.setInterval(() => { void request<{ jobs: ComfyJob[] }>(`/jobs?assetPath=${encodeURIComponent(assetPath)}`)
@@ -1892,6 +1976,7 @@ function GenerationModal({
     ...(asset.type === "character" && lookPath ? { lookPath } : {}),
     presetId: activePreset?.id,
     profileId: activeProfileId,
+    ...(selectedModel ? { modelId: selectedModel.id } : {}),
     ...(projectId ? { projectId } : {}),
     // Keep prompt edits task-local. Null means the initial server preview has
     // not arrived yet, so omit overrides and let the server derive its value.
@@ -1938,7 +2023,7 @@ function GenerationModal({
   }, [promptInitializationKey]);
 
   useEffect(() => {
-    if (!promptInitializationKey || loading || !activePreset) return;
+    if (!promptInitializationKey || loading || !activePreset || (requiresModel && !modelReady)) return;
     if (promptInitializationKeyRef.current === promptInitializationKey) return;
     promptInitializationKeyRef.current = promptInitializationKey;
     let cancelled = false;
@@ -1962,7 +2047,7 @@ function GenerationModal({
         if (!cancelled) setPromptLoading(false);
       });
     return () => { cancelled = true; };
-  }, [loading, promptHydrationBody, promptInitializationKey, request]);
+  }, [loading, modelReady, promptHydrationBody, promptInitializationKey, request, requiresModel]);
 
   const chooseProfile = async (profileId: string) => {
     setActiveProfileId(profileId);
@@ -1975,19 +2060,9 @@ function GenerationModal({
     }
   };
 
-  const choosePreset = (nextId: string) => {
-    const next = availablePresets.find((preset) => preset.id === nextId);
-    presetIdRef.current = nextId;
-    setPresetId(nextId);
+  const chooseModel = (nextId: string) => {
+    setModelId(nextId);
     setPreview(null);
-    if (!next) return;
-    setWidth(String(next.defaults?.width ?? 1024));
-    setHeight(String(next.defaults?.height ?? 1024));
-    setSeed(next.defaults?.seed === undefined ? "" : String(next.defaults.seed));
-    setDenoise(String(next.defaults?.denoise ?? 0.65));
-    setFrames(String(next.defaults?.frames ?? 121));
-    setFps(String(next.defaults?.fps ?? 24));
-    setDurationSeconds(String(next.defaults?.durationSeconds ?? 5));
   };
 
   const chooseFrameMode = (nextMode: FrameGenerationMode) => {
@@ -2031,13 +2106,13 @@ function GenerationModal({
   };
 
   if (!assetPath) {
-    return <div className="modal-backdrop"><section aria-modal="true" className="modal-card generation-modal" role="dialog"><div className="modal-heading"><div><h2>请先新建镜头</h2></div><button aria-label="关闭" className="icon-button" onClick={onClose} type="button">×</button></div><div className="modal-actions"><button className="text-button" onClick={onClose} type="button">知道了</button></div></section></div>;
+    return <div className="modal-backdrop"><section aria-modal="true" className="modal-card generation-modal" role="dialog"><div className="modal-heading"><div><h2>请先新建分镜</h2></div><button aria-label="关闭" className="icon-button" onClick={onClose} type="button">×</button></div><div className="modal-actions"><button className="text-button" onClick={onClose} type="button">知道了</button></div></section></div>;
   }
 
-  const profileReady = Boolean(activeProfile?.enabled && activeProfile?.configured);
   const canSubmit = Boolean(
     activePreset
     && profileReady
+    && modelReady
     && (!isFrameImageToImage || referenceImagePaths.length > 0),
   );
   const frameModeAvailable = (mode: FrameGenerationMode) => !frameGeneration || availablePresets.some((preset) => (
@@ -2065,13 +2140,12 @@ function GenerationModal({
         <button aria-label="关闭" className="icon-button" onClick={onClose} type="button">×</button>
       </header>
       <div className="generation-modal-body">
-        {loading ? <p className="generation-loading">正在读取服务器配置与工作流预设…</p> : <>
+        {loading ? <p className="generation-loading">正在读取生成设置…</p> : <>
           <section className="generation-section generation-task-settings">
             <div className="generation-form-grid">
               <SelectField ariaLabel="选择 ComfyUI 服务器" label="服务器" onChange={(value) => void chooseProfile(value)} options={profiles.map((profile) => ({ label: `${profile.name}${profile.configured && profile.enabled ? "" : " · 未配置"}`, value: profile.id }))} value={activeProfileId} />
-              {lockedPresetId ? <div className="generation-fixed-preset"><span>工作流</span><strong>{activePreset?.label || (loading ? "正在读取…" : "不可用")}</strong></div> : <SelectField ariaLabel="选择 ComfyUI 工作流" label="工作流" disabled={!availablePresets.length} onChange={choosePreset} options={availablePresets.map((preset) => ({ label: preset.label, value: preset.id }))} value={activePreset?.id || ""} />}
+              {isVideo ? <div className="generation-fixed-preset"><span>视频</span><strong>{activePreset?.label || "不可用"}</strong></div> : modelsLoading ? <div className="generation-fixed-preset"><span>模型</span><strong>读取中…</strong></div> : selectedModel && models.length > 1 ? <SelectField ariaLabel="选择生成模型" label="模型" onChange={chooseModel} options={models.map((model) => ({ label: model.label, value: model.id }))} value={selectedModel.id} /> : <div className="generation-fixed-preset"><span>模型</span><strong>{selectedModel?.label || (!profileReady ? "先连接服务器" : modelsError || "此方式暂无可用模型")}</strong></div>}
             </div>
-            {!profileReady ? <p className="generation-inline-error">服务器未配置</p> : null}
           </section>
           {frameGeneration ? <section className="generation-section frame-generation-section">
             <div aria-label={`${frameGenerationLabel(frameGeneration.target)}生成方式`} className="frame-generation-mode-toggle" role="group">
@@ -2133,7 +2207,7 @@ function GenerationModal({
             return <article key={job.id}>
               <span className={`generation-job-dot is-${job.status}`} />
               <div>
-                <strong>{job.presetLabel || "ComfyUI 任务"}</strong>
+                <strong>{job.modelLabel || job.presetLabel || "ComfyUI 任务"}</strong>
                 <small>{formatComfyJobStatus(job)}{formatComfyJobDetail(job)}</small>
                 {prompt ? <details className="generation-job-prompt">
                   <summary>提示词</summary>
@@ -2560,7 +2634,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
         effective.set(override.characterPath, {
           ...inherited,
           state: override.state || inherited.state,
-          sourceLabel: override.state ? "场次默认 · 本镜头状态" : inherited.sourceLabel,
+          sourceLabel: override.state ? "场次默认 · 本分镜状态" : inherited.sourceLabel,
         });
         continue;
       }
@@ -2569,7 +2643,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
         ...(override.mode === "look" && override.lookPath ? { lookPath: override.lookPath } : {}),
         state: override.state || inherited?.state || "",
         continuity: inherited?.continuity || "",
-        sourceLabel: override.mode === "look" ? "本镜头 · 覆盖造型" : "本镜头 · 身份基准",
+          sourceLabel: override.mode === "look" ? "本分镜 · 覆盖造型" : "本分镜 · 身份基准",
       });
     }
     return [...effective.values()];
@@ -2637,12 +2711,8 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     const character = characterByPath.get(entry.characterPath);
     const look = getLookForPath(character, entry.lookPath);
     return Boolean(
-      look?.confirmedVisuals.reference
-      ?? look?.confirmedVisuals.turnaround
-      ?? look?.confirmedVisuals.costume
-      ?? character?.confirmedVisuals.reference
-      ?? character?.confirmedVisuals.turnaround
-      ?? character?.confirmedVisuals.costume,
+      look?.confirmedVisuals.turnaround
+      ?? character?.confirmedVisuals.turnaround,
     );
   });
   const selectedShotReferenceVisuals = useMemo<ShotReferenceVisual[]>(() => {
@@ -2675,12 +2745,8 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     for (const entry of effectiveCastForSelectedShot) {
       const character = characterByPath.get(entry.characterPath);
       const look = getLookForPath(character, entry.lookPath);
-      const file = look?.confirmedVisuals.reference
-        ?? look?.confirmedVisuals.turnaround
-        ?? look?.confirmedVisuals.costume
-        ?? character?.confirmedVisuals.reference
-        ?? character?.confirmedVisuals.turnaround
-        ?? character?.confirmedVisuals.costume;
+      const file = look?.confirmedVisuals.turnaround
+        ?? character?.confirmedVisuals.turnaround;
       if (file) addVisual({
         key: `character-${entry.characterPath}`,
         label: character?.name || displayFileName(entry.characterPath),
@@ -2693,9 +2759,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     // Keep project character assets available as direct references instead of
     // making users create a redundant scene binding first.
     for (const character of characterAssets) {
-      const file = character.confirmedVisuals.reference
-        ?? character.confirmedVisuals.turnaround
-        ?? character.confirmedVisuals.costume;
+      const file = character.confirmedVisuals.turnaround;
       if (file) addVisual({
         key: `character-project-${character.rootPath}`,
         label: character.name,
@@ -2726,7 +2790,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
         add(`${label} · ${slot.label}`, detail, file, role);
       }
     };
-    addAssetImages(selectedAsset, ["reference", "candidate", "firstFrame", "lastFrame"], "当前镜头", "镜头", "referenceImage");
+    addAssetImages(selectedAsset, ["reference", "candidate", "firstFrame", "lastFrame"], "当前分镜", "分镜", "referenceImage");
     if (activeScene?.scene) {
       addAssetImages(activeScene.scene, ["setting", "reference", "firstFrame", "lastFrame"], activeScene.sceneId, "场次", "sceneReference");
     }
@@ -2739,7 +2803,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
 
     const addCharacterImages = (character: CharacterAsset, sourceLabel = character.name, look?: CharacterLook) => {
       const source = look ?? character;
-      addAssetImages(source, ["reference", "turnaround", "costume"], sourceLabel, "人物", "characterReference");
+      addAssetImages(source, ["turnaround"], sourceLabel, "人物", "characterReference");
     };
     // Include scene-bound characters first, then the rest of the project. This
     // keeps the useful choices at the top while allowing a shot whose cast
@@ -2795,9 +2859,9 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     };
     const addLocation = (location: LocationAsset) => addAssetImages(location, ["setting", "reference", "candidate"], location.name, "场景", "sceneReference");
     const addCharacter = (character: CharacterAsset) => {
-      addAssetImages(character, ["reference", "turnaround", "costume"], character.name, "人物", "characterReference");
+      addAssetImages(character, ["turnaround"], character.name, "人物", "characterReference");
       for (const look of character.looks) {
-        addAssetImages(look, ["reference", "turnaround", "costume"], `${character.name} · ${look.name}`, "人物", "characterReference");
+        addAssetImages(look, ["turnaround"], `${character.name} · ${look.name}`, "人物", "characterReference");
       }
     };
     const addProp = (prop: PropAsset) => addAssetImages(prop, ["reference", "candidate"], prop.name, "道具", "propReference");
@@ -2837,7 +2901,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       video: hasGeneratedShotVideo,
     };
     return [
-      { id: "design", label: "镜头设计", state: activeShotWorkflowStep === "design" ? "current" : completed.design ? "done" : "pending" },
+      { id: "design", label: "分镜设计", state: activeShotWorkflowStep === "design" ? "current" : completed.design ? "done" : "pending" },
       { id: "reference", label: "画面参考", state: activeShotWorkflowStep === "reference" ? "current" : completed.reference ? "done" : "pending" },
       { id: "firstFrame", label: "首帧", state: activeShotWorkflowStep === "firstFrame" ? "current" : completed.firstFrame ? "done" : "pending" },
       { id: "lastFrame", label: "尾帧", state: activeShotWorkflowStep === "lastFrame" ? "current" : completed.lastFrame ? "done" : "pending" },
@@ -2886,6 +2950,10 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       || JSON.stringify(scenePropBindingsDraft) !== JSON.stringify(scenePropBindings(selectedAsset))
     ),
   );
+  const savedSceneDraft = selectedAsset?.type === "scene"
+    ? normalizeLegacySceneDocumentTitle(selectedAsset.sceneContent || "", selectedAsset.sceneId)
+    : "";
+  const hasUnsavedSceneDocument = selectedAsset?.type === "scene" && sceneDraft !== savedSceneDraft;
   const hasUnsavedShotDesign = Boolean(
     selectedAsset?.type === "shot"
     && !selectedAsset.isDraft
@@ -2927,7 +2995,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       return hasUnsavedProfileDraft || hasUnsavedLookDraft || hasUnsavedProjectSettingsDraft;
     }
     if (selectedAsset.type === "scene") {
-      return sceneDraft !== normalizeLegacySceneDocumentTitle(selectedAsset.sceneContent || "", selectedAsset.sceneId)
+      return hasUnsavedSceneDocument
         || JSON.stringify(sceneCastDraft) !== JSON.stringify(selectedAsset.castBindings)
         || hasUnsavedSceneAssetBindings
         || hasUnsavedProjectSettingsDraft;
@@ -2936,7 +3004,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       return sceneDraft !== (selectedAsset.profileContent || "") || hasUnsavedProjectSettingsDraft;
     }
     return hasUnsavedShotDesign || hasUnsavedProjectSettingsDraft;
-  }, [draftHydratedIdentity, draftHydrationIdentity, hasUnsavedLookDraft, hasUnsavedProfileDraft, hasUnsavedProjectSettingsDraft, hasUnsavedSceneAssetBindings, hasUnsavedShotDesign, sceneCastDraft, sceneDraft, selectedAsset]);
+  }, [draftHydratedIdentity, draftHydrationIdentity, hasUnsavedLookDraft, hasUnsavedProfileDraft, hasUnsavedProjectSettingsDraft, hasUnsavedSceneAssetBindings, hasUnsavedSceneDocument, hasUnsavedShotDesign, sceneCastDraft, sceneDraft, selectedAsset]);
 
   useEffect(() => {
     if (!isDirty) return;
@@ -3428,7 +3496,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   const openStoryboardImport = () => {
     const firstGroup = activeDraftGroups[0];
     if (!firstGroup) {
-      notify("error", "当前场次没有可导入的镜头草稿");
+      notify("error", "当前场次没有可导入的分镜草稿");
       return;
     }
     setImportSourcePath(firstGroup.sourcePath);
@@ -3457,7 +3525,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
 
   const handleImportStoryboard = async (sourcePath: string, shotIds: string[], dirtyMessage?: string) => {
     if (!sourcePath || !shotIds.length) {
-      notify("error", "请至少选择一个镜头草稿");
+      notify("error", "请至少选择一个分镜草稿");
       return;
     }
     if (!confirmLeaveDraft(dirtyMessage)) return;
@@ -3476,7 +3544,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
         await loadSnapshot(true);
       }
       const details = [
-        result.created.length ? `已创建 ${result.created.length} 个镜头` : "没有新建镜头",
+        result.created.length ? `已创建 ${result.created.length} 个分镜` : "没有新建分镜",
         result.skipped.length ? `跳过 ${result.skipped.length} 个重复项` : "",
         result.errors.length ? `${result.errors.length} 个未完成` : "",
       ].filter(Boolean);
@@ -3498,7 +3566,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     void handleImportStoryboard(
       selectedAsset.sourcePath,
       [storyboardImportSelector(selectedAsset)],
-      "当前草稿有未保存修改。新建镜头会按原始剧本导入并丢弃这些临时修改，是否继续？",
+      "当前草稿有未保存修改。新建分镜会按原始剧本导入并丢弃这些临时修改，是否继续？",
     );
   };
 
@@ -3616,7 +3684,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
 
   const handleCreateShot = async () => {
     if (!newSceneId.trim() || !newShotId.trim() || !newShotTitle.trim()) return;
-    if (!confirmLeaveDraft("新建镜头后会刷新资产列表，当前未保存的编辑将丢失。是否继续？")) return;
+    if (!confirmLeaveDraft("新建分镜后会刷新资产列表，当前未保存的编辑将丢失。是否继续？")) return;
     setBusy(true);
     try {
       const sceneId = newSceneId.trim();
@@ -3628,7 +3696,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       setSearch("");
       await refreshAndSelect(result.path ? `shot:${result.path}` : undefined);
     } catch (error) {
-      notify("error", error instanceof Error ? error.message : "新建镜头失败");
+      notify("error", error instanceof Error ? error.message : "新建分镜失败");
     } finally {
       setBusy(false);
     }
@@ -3661,7 +3729,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
           expectedRevision: selectedAsset.sceneRevision,
         });
       } else {
-        if (!selectedAsset.designRevision) throw new Error("请先刷新镜头后再保存。");
+        if (!selectedAsset.designRevision) throw new Error("请先刷新分镜后再保存。");
         await postAction({
           action: "updateShotDesign",
           assetPath: selectedAsset.rootPath,
@@ -3672,6 +3740,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       await loadSnapshot(true);
       setRevisionConflictKey(null);
       if (selectedAsset.type === "shot") setShotDesignMode("preview");
+      if (selectedAsset.type === "scene") setSceneMode("preview");
       return true;
     } catch (error) {
       if (error instanceof AssetApiError && error.code === "REVISION_CONFLICT") {
@@ -3879,12 +3948,12 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     const inherited = inheritedSceneCastForSelectedShot[0];
     const character = inherited ? characterByPath.get(inherited.characterPath) : characterAssets[0];
     if (!character) {
-      notify("error", "请先新建人物，再为镜头设置人物造型");
+      notify("error", "请先新建人物，再为分镜设置人物造型");
       return;
     }
     const existing = designDraft.characterOverrides ?? [];
     if (existing.some((override) => override.characterPath === character.rootPath)) {
-      notify("error", "该人物已经有镜头级造型覆盖");
+      notify("error", "该人物已经有分镜级造型覆盖");
       return;
     }
     setDesignDraft((draft) => ({
@@ -4067,7 +4136,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       : selectedAsset.type === "location" || selectedAsset.type === "prop"
         ? selectedAsset.name
       : selectedAsset.type === "scene"
-        ? `${selectedAsset.sceneId} 场次及其全部镜头`
+        ? `${selectedAsset.sceneId} 场次及其全部分镜`
         : selectedAsset.design.shotId;
     if (!window.confirm(`确认将“${assetLabel}”移入回收站？`)) return;
     if (!confirmLeaveDraft("移入回收站会放弃当前未保存的编辑。是否继续？")) return;
@@ -4092,7 +4161,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
         setModal("rename");
         return;
       }
-      notify("error", "场次编号同时是镜头身份，当前不支持在工作台内重命名。");
+      notify("error", "场次编号同时是分镜身份，当前不支持在工作台内重命名。");
       return;
     }
     setRenameValue(selectedAsset.type === "character" ? selectedAsset.name : selectedAsset.design.title);
@@ -4170,7 +4239,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
   const handleGenerateSceneImageFromShot = async () => {
     if (!selectedAsset || selectedAsset.type !== "shot" || selectedAsset.isDraft) return;
     if (!designDraft.prompt.trim() && !designDraft.content.trim()) {
-      notify("error", "请先保存镜头画面或提示词");
+      notify("error", "请先保存分镜画面或提示词");
       return;
     }
     // Build this from the current draft before saving: React state updates from
@@ -4203,7 +4272,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     if (selectedAsset?.type !== "shot" || selectedAsset.isDraft) return;
     if (activeShotWorkflowStep === "design") {
       if (!designDraft.prompt.trim() && !designDraft.content.trim()) {
-        notify("error", "请先填写镜头画面或提示词");
+      notify("error", "请先填写分镜画面或提示词");
         return;
       }
       const saved = await handleSave();
@@ -4227,7 +4296,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
       return;
     }
     if (!hasSelectedFirstFrame || !hasSelectedLastFrame) {
-      notify("error", "图生视频需要当前镜头已选的首帧和尾帧");
+      notify("error", "图生视频需要当前分镜已选的首帧和尾帧");
       return;
     }
     if (hasUnsavedShotDesign && !(await handleSave())) return;
@@ -4242,10 +4311,10 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
     if (!assemblyData) return;
     const missingCount = assemblyData.shots.filter((shot) => !shot.choices.length).length;
     if (missingCount) {
-      notify("error", `缺少 ${missingCount} 个镜头视频`);
+      notify("error", `缺少 ${missingCount} 个分镜视频`);
       return;
     }
-    if (!confirmLeaveDraft("合并前会读取当前已生成的镜头视频。是否继续？")) return;
+    if (!confirmLeaveDraft("合并前会读取当前已生成的分镜视频。是否继续？")) return;
     setBusy(true);
     try {
       const selections = assemblyData.shots.map((shot) => ({
@@ -4323,15 +4392,15 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
               onChange={(sceneId) => {
                 changeScene(sceneId);
               }}
-              options={sceneGroups.map((scene) => ({ label: `${scene.sceneId} · ${scene.shots.length} 镜头`, value: scene.sceneId }))}
+              options={sceneGroups.map((scene) => ({ label: `${scene.sceneId} · ${scene.shots.length} 分镜`, value: scene.sceneId }))}
               value={activeScene?.sceneId || ""}
             />
           </div> : null}
-          <div className="asset-list-tools"><div className="asset-search"><span aria-hidden="true">⌕</span><input aria-label={activeTab === "characters" ? "搜索人物" : activeTab === "locations" ? "搜索场景" : activeTab === "props" ? "搜索道具" : "搜索当前场次镜头"} onChange={(event) => changeSearch(event.target.value)} placeholder={activeTab === "characters" ? "搜索人物" : activeTab === "locations" ? "搜索场景" : activeTab === "props" ? "搜索道具" : "搜索当前场次镜头"} value={search} />{search ? <button aria-label="清空搜索" className="asset-search-clear" onClick={() => changeSearch("")} type="button">×</button> : null}</div>{activeTab === "characters" || activeTab === "locations" || activeTab === "props" ? <button aria-label="新建资产" className="add-asset-button" onClick={openCreate} type="button"><span aria-hidden="true">＋</span><b>新建</b></button> : <div className="scene-create-actions"><button aria-label="新建场次" className="add-asset-button is-secondary" onClick={openCreateScene} type="button"><span aria-hidden="true">＋</span><b>场次</b></button><button aria-label="新建镜头" className="add-asset-button" onClick={openCreate} type="button"><span aria-hidden="true">＋</span><b>镜头</b></button></div>}</div>
+          <div className="asset-list-tools"><div className="asset-search"><span aria-hidden="true">⌕</span><input aria-label={activeTab === "characters" ? "搜索人物" : activeTab === "locations" ? "搜索场景" : activeTab === "props" ? "搜索道具" : "搜索当前场次分镜"} onChange={(event) => changeSearch(event.target.value)} placeholder={activeTab === "characters" ? "搜索人物" : activeTab === "locations" ? "搜索场景" : activeTab === "props" ? "搜索道具" : "搜索当前场次分镜"} value={search} />{search ? <button aria-label="清空搜索" className="asset-search-clear" onClick={() => changeSearch("")} type="button">×</button> : null}</div>{activeTab === "characters" || activeTab === "locations" || activeTab === "props" ? <button aria-label="新建资产" className="add-asset-button" onClick={openCreate} type="button"><span aria-hidden="true">＋</span><b>新建</b></button> : <div className="scene-create-actions"><button aria-label="新建场次" className="add-asset-button is-secondary" onClick={openCreateScene} type="button"><span aria-hidden="true">＋</span><b>场次</b></button><button aria-label="新建分镜" className="add-asset-button" onClick={openCreate} type="button"><span aria-hidden="true">＋</span><b>分镜</b></button></div>}</div>
           {activeTab === "shots" ? <button className="import-storyboard-button" disabled={busy || !activeDraftGroups.length} onClick={openStoryboardImport} type="button"><span aria-hidden="true">⇣</span>导入当前场次剧本{activeDraftGroups.length ? <b>{activeDraftGroups.reduce((total, group) => total + group.shots.length, 0)}</b> : null}</button> : null}
           {activeTab === "shots" && activeScene?.scene ? <div className="scene-asset-summary"><SceneAssetCard active={assetKey(activeScene.scene) === selectedKey} onClick={() => selectAsset(assetKey(activeScene.scene!))} scene={activeScene.scene} /></div> : activeTab === "shots" && activeScene ? <button className="scene-asset-create-note" disabled={busy} onClick={() => void handleCreateScene(activeScene.sceneId)} type="button"><b>完善场次</b></button> : null}
           <div aria-labelledby={`${activeTab}-tab`} className="asset-card-list" id="asset-list-panel" role="tabpanel">
-            {loading ? <div className="asset-list-empty">正在整理资产…</div> : snapshot?.error ? <div className="asset-list-empty error-copy">{snapshot.error}</div> : visibleAssets.length ? visibleAssets.map((asset) => <AssetCard active={assetKey(asset) === selectedKey} asset={asset} key={assetKey(asset)} onClick={() => selectAsset(assetKey(asset))} sceneReferenceCount={asset.type === "location" || asset.type === "prop" ? sceneReferenceCounts.get(asset.rootPath) : undefined} />) : <div className="asset-list-empty"><strong>{search ? "没有匹配资产" : activeTab === "characters" ? "还没有人物" : activeTab === "locations" ? "还没有场景" : activeTab === "props" ? "还没有道具" : "当前场次还没有镜头"}</strong></div>}
+            {loading ? <div className="asset-list-empty">正在整理资产…</div> : snapshot?.error ? <div className="asset-list-empty error-copy">{snapshot.error}</div> : visibleAssets.length ? visibleAssets.map((asset) => <AssetCard active={assetKey(asset) === selectedKey} asset={asset} key={assetKey(asset)} onClick={() => selectAsset(assetKey(asset))} sceneReferenceCount={asset.type === "location" || asset.type === "prop" ? sceneReferenceCounts.get(asset.rootPath) : undefined} />) : <div className="asset-list-empty"><strong>{search ? "没有匹配资产" : activeTab === "characters" ? "还没有人物" : activeTab === "locations" ? "还没有场景" : activeTab === "props" ? "还没有道具" : "当前场次还没有分镜"}</strong></div>}
           </div>
           </> : null}
         </aside>
@@ -4354,7 +4423,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
             </div>
             {activeTab !== "assembly" && selectedAsset ? <div className="asset-studio-actions">
               {isDirty || selectedAsset.type === "shot" && selectedAsset.isDraft ? <span className={`asset-state-pill ${isDirty ? "is-dirty" : ""}`}>{isDirty ? "未保存" : "待导入"}</span> : null}
-              {selectedAsset.type === "shot" && selectedShotIndex >= 0 ? <div className="shot-stepper" aria-label="镜头导航"><span>{String(selectedShotIndex + 1).padStart(2, "0")} / {String(activeShotAssets.length).padStart(2, "0")}</span><button aria-label="上一个镜头" disabled={busy || selectedShotIndex === 0} onClick={() => moveSelectedShot(-1)} type="button">‹</button><button aria-label="下一个镜头" disabled={busy || selectedShotIndex === activeShotAssets.length - 1} onClick={() => moveSelectedShot(1)} type="button">›</button></div> : null}
+              {selectedAsset.type === "shot" && selectedShotIndex >= 0 ? <div className="shot-stepper" aria-label="分镜导航"><span>{String(selectedShotIndex + 1).padStart(2, "0")} / {String(activeShotAssets.length).padStart(2, "0")}</span><button aria-label="上一个分镜" disabled={busy || selectedShotIndex === 0} onClick={() => moveSelectedShot(-1)} type="button">‹</button><button aria-label="下一个分镜" disabled={busy || selectedShotIndex === activeShotAssets.length - 1} onClick={() => moveSelectedShot(1)} type="button">›</button></div> : null}
               {selectedAsset.type === "character" || selectedAsset.type === "location" || selectedAsset.type === "prop" ? <button className="studio-action-button generation-open-button" disabled={busy} onClick={() => void openAssetGeneration()} type="button">生成</button> : null}
               {selectedAsset.type !== "shot" || !selectedAsset.isDraft ? <>
                 {selectedAsset.type !== "scene" ? <button className="studio-action-button" disabled={busy} onClick={openRename} type="button">重命名</button> : null}
@@ -4445,17 +4514,19 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
               <section className="editor-card scene-document-editor">
                 <div className="editor-card-heading">
                   <div>
-                    <h3>场次说明</h3>
+                    <h3>场次故事线</h3>
                   </div>
                   {selectedAsset.scenePath ? <div className="editor-card-heading-actions">
-                    <button aria-pressed={sceneMode === "edit"} className="editor-mode-button" onClick={() => setSceneMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{sceneMode === "preview" ? "编辑" : "预览"}</button>
-                    <button className="save-button" disabled={busy || sceneDraft === (selectedAsset.sceneContent || "")} onClick={() => void handleSave()} type="button">{busy ? "处理中…" : sceneDraft === (selectedAsset.sceneContent || "") ? "已保存" : "保存场次说明"}</button>
+                    {sceneMode === "preview" ? <button className="editor-mode-button" onClick={() => setSceneMode("edit")} type="button">编辑</button> : <>
+                      <button className="editor-mode-button" disabled={busy} onClick={() => { setSceneDraft(savedSceneDraft); setSceneMode("preview"); }} type="button">取消</button>
+                      <button className="save-button" disabled={busy || !hasUnsavedSceneDocument} onClick={() => void handleSave()} type="button">{busy ? "保存中…" : "保存故事线"}</button>
+                    </>}
                   </div> : null}
                 </div>
                 {!selectedAsset.scenePath ? <div className="scene-setup-empty">
                   <button className="save-button primary" disabled={busy} onClick={() => void handleCreateScene(selectedAsset.sceneId)} type="button">{busy ? "创建中…" : "完善场次"}</button>
                 </div> : <>
-                  {sceneMode === "preview" ? <ProfilePreview content={sceneDraft} /> : <textarea aria-label={`${selectedAsset.sceneId}场次说明`} className="profile-textarea" onChange={(event) => { setSceneDraft(event.target.value); setSceneMode("edit"); }} placeholder="输入场次说明" value={sceneDraft} />}
+                  {sceneMode === "preview" ? <ProfilePreview content={sceneDraft} /> : <textarea aria-label={`${selectedAsset.sceneId}场次故事线`} className="profile-textarea" onChange={(event) => setSceneDraft(event.target.value)} placeholder="输入本场完整故事线、剧情节奏与连续性要求" value={sceneDraft} />}
                   {!selectedAsset.isComplete ? <button className="scene-complete-button" disabled={busy} onClick={() => void handleCreateScene(selectedAsset.sceneId)} type="button">完善场次资料</button> : null}
                 </>}
               </section>
@@ -4533,7 +4604,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
               {selectedAsset.isDraft && selectedShotMedia ? <PrimaryMedia file={selectedShotMedia} label={`${selectedAsset.design.shotId} ${displayShotTitle(selectedAsset)}`} onPreview={() => setMediaPreview(selectedShotMedia)} /> : null}
               {!selectedAsset.isDraft ? <ShotWorkflowStepper activeStep={activeShotWorkflowStep} disabled={busy} nodes={shotWorkflowNodes} onSelect={(step) => void selectShotWorkflowStep(step)} /> : null}
               <div className="workflow-step-panel">
-              {selectedAsset.isDraft || activeShotWorkflowStep === "design" ? <section className="editor-card shot-design-editor"><div className="editor-card-heading"><div><h3>{selectedAsset.isDraft ? "镜头草稿" : "镜头描述"}</h3></div>{selectedAsset.isDraft ? <button className="save-button primary" disabled={busy || !selectedAsset.sourcePath} onClick={handleCreateSelectedDraft} type="button">{busy ? "创建中…" : "新建镜头"}</button> : <div className="editor-card-heading-actions"><button aria-pressed={shotDesignMode === "edit"} className="editor-mode-button" onClick={() => setShotDesignMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{shotDesignMode === "preview" ? "修改" : "预览"}</button>{shotDesignMode === "edit" ? <button className="save-button" disabled={busy || !hasUnsavedShotDesign} onClick={() => void handleSave()} type="button">{busy ? "处理中…" : hasUnsavedShotDesign ? "保存" : "已保存"}</button> : null}</div>}</div>
+              {selectedAsset.isDraft || activeShotWorkflowStep === "design" ? <section className="editor-card shot-design-editor"><div className="editor-card-heading"><div><h3>{selectedAsset.isDraft ? "分镜草稿" : "分镜描述"}</h3></div>{selectedAsset.isDraft ? <button className="save-button primary" disabled={busy || !selectedAsset.sourcePath} onClick={handleCreateSelectedDraft} type="button">{busy ? "创建中…" : "新建分镜"}</button> : <div className="editor-card-heading-actions"><button aria-pressed={shotDesignMode === "edit"} className="editor-mode-button" onClick={() => setShotDesignMode((mode) => mode === "preview" ? "edit" : "preview")} type="button">{shotDesignMode === "preview" ? "修改" : "预览"}</button>{shotDesignMode === "edit" ? <button className="save-button" disabled={busy || !hasUnsavedShotDesign} onClick={() => void handleSave()} type="button">{busy ? "处理中…" : hasUnsavedShotDesign ? "保存" : "已保存"}</button> : null}</div>}</div>
                 {selectedAsset.isDraft ? <DraftSummary design={designDraft} /> : shotDesignMode === "preview" ? <ShotDesignPreview design={designDraft} /> : <>
                   <div className="design-grid">
                     <TextField label="时码" onChange={(value) => setDesignDraft((draft) => ({ ...draft, timecode: value }))} value={designDraft.timecode} />
@@ -4568,7 +4639,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                     {inheritedSceneCastForSelectedShot.length ? <div className="shot-inherited-cast" aria-label="继承的场次人物与造型">{inheritedSceneCastForSelectedShot.map((binding) => {
                       const character = characterByPath.get(binding.characterPath);
                       const look = getLookForPath(character, binding.lookPath);
-                      const preview = look?.confirmedVisuals.turnaround ?? look?.confirmedVisuals.costume ?? character?.confirmedVisuals.turnaround;
+                      const preview = look?.confirmedVisuals.turnaround ?? character?.confirmedVisuals.turnaround;
                       return <article className="shot-inherited-cast-card" key={`${binding.characterPath}-${binding.startShotId}-${binding.endShotId}`}>
                         {preview && isImage(preview) ? <button aria-label={`查看${character?.name || "人物"}当前造型`} className="shot-inherited-cast-image" onClick={() => setMediaPreview(preview)} type="button"><img alt={`${character?.name || "人物"}造型参考`} decoding="async" loading="lazy" src={mediaUrl(preview)} /></button> : <span className="shot-inherited-cast-mark">人</span>}
                         <div><strong>{character?.name || displayFileName(binding.characterPath)}</strong><small>{displayLookLabel(character, binding.lookPath)} · {formatBindingRange(binding)}</small>{binding.state ? <em>{binding.state}</em> : null}</div>
@@ -4584,23 +4655,21 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                       ];
                       const appearanceValue = override.mode === "inherit" ? "__inherit__" : override.mode === "identity" ? "__identity__" : override.lookPath || "__identity__";
                       return <article className="shot-character-override" key={`${override.characterPath}-${index}`}>
-                        <div className="scene-cast-row-head"><strong>镜头覆盖 {String(index + 1).padStart(2, "0")}</strong><button aria-label={`移除第 ${index + 1} 条镜头人物覆盖`} className="asset-file-remove" disabled={busy} onClick={() => removeShotCharacterOverride(index)} type="button">×</button></div>
+                        <div className="scene-cast-row-head"><strong>分镜覆盖 {String(index + 1).padStart(2, "0")}</strong><button aria-label={`移除第 ${index + 1} 条分镜人物覆盖`} className="asset-file-remove" disabled={busy} onClick={() => removeShotCharacterOverride(index)} type="button">×</button></div>
                         <div className="scene-cast-row-grid">
                           <SelectField ariaLabel={`选择第 ${index + 1} 条镜头覆盖人物`} label="人物" disabled={busy || !characterAssets.length} onChange={(characterPath) => updateShotCharacterOverride(index, { characterPath, mode: inheritedSceneCastForSelectedShot.some((binding) => binding.characterPath === characterPath) ? "inherit" : "identity", lookPath: undefined })} options={characterAssets.map((asset) => ({ label: `${asset.name} · ${asset.roleCategory}`, value: asset.rootPath }))} value={override.characterPath} />
-                          <SelectField ariaLabel={`选择${character?.name || "人物"}在本镜头的造型`} label="本镜头造型" disabled={busy || !appearanceOptions.length} onChange={(value) => updateShotCharacterOverride(index, value === "__inherit__" ? { mode: "inherit", lookPath: undefined } : value === "__identity__" ? { mode: "identity", lookPath: undefined } : { mode: "look", lookPath: value })} options={appearanceOptions} value={appearanceValue} />
+                          <SelectField ariaLabel={`选择${character?.name || "人物"}在本分镜的造型`} label="本分镜造型" disabled={busy || !appearanceOptions.length} onChange={(value) => updateShotCharacterOverride(index, value === "__inherit__" ? { mode: "inherit", lookPath: undefined } : value === "__identity__" ? { mode: "identity", lookPath: undefined } : { mode: "look", lookPath: value })} options={appearanceOptions} value={appearanceValue} />
                           <TextField label="局部状态" onChange={(state) => updateShotCharacterOverride(index, { state })} placeholder="如：沾灰、眉心红线清晰" value={override.state} />
                         </div>
                       </article>;
                     })}</div> : null}
-                    {effectiveCastForSelectedShot.length ? <div className="shot-effective-cast" aria-label="本镜头最终生效的人物与造型">
+                    {effectiveCastForSelectedShot.length ? <div className="shot-effective-cast" aria-label="本分镜最终生效的人物与造型">
                       <div className="shot-effective-cast-heading"><strong>最终生效的人物与造型</strong></div>
                       <div className="shot-inherited-cast">{effectiveCastForSelectedShot.map((entry) => {
                         const character = characterByPath.get(entry.characterPath);
                         const look = getLookForPath(character, entry.lookPath);
                         const preview = look?.confirmedVisuals.turnaround
-                          ?? look?.confirmedVisuals.costume
-                          ?? character?.confirmedVisuals.turnaround
-                          ?? character?.confirmedVisuals.costume;
+                          ?? character?.confirmedVisuals.turnaround;
                         return <article className="shot-inherited-cast-card" key={`effective-${entry.characterPath}`}>
                           {preview && isImage(preview) ? <button aria-label={`查看${character?.name || "人物"}最终生效造型`} className="shot-inherited-cast-image" onClick={() => setMediaPreview(preview)} type="button"><img alt={`${character?.name || "人物"}最终生效造型`} decoding="async" loading="lazy" src={mediaUrl(preview)} /></button> : <span className="shot-inherited-cast-mark">人</span>}
                           <div><strong>{character?.name || displayFileName(entry.characterPath)}</strong><small>{displayLookLabel(character, entry.lookPath)} · {entry.sourceLabel}</small>{entry.state ? <em>{entry.state}</em> : entry.continuity ? <em>{entry.continuity}</em> : null}</div>
@@ -4621,7 +4690,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
               {!selectedAsset.isDraft && activeShotWorkflowStep === "design" ? <WorkflowStepFooter disabled={busy} label="保存并下一步" onClick={() => void advanceShotWorkflow()} /> : null}
               {!selectedAsset.isDraft && activeShotWorkflowStep === "reference" ? <section className="workflow-step-content">
                 <div className="workflow-step-heading"><div><h3>画面参考</h3></div><button className="studio-action-button generation-open-button" disabled={busy} onClick={() => void handleGenerateSceneImageFromShot()} type="button">生成场景图</button></div>
-                <div className="workflow-reference-overview" aria-label="当前镜头继承资料">
+                <div className="workflow-reference-overview" aria-label="当前分镜继承资料">
                   <span className="workflow-reference-chip">{activeScene?.sceneId || selectedAsset.design.sceneId}</span>
                   {effectiveCastForSelectedShot.map((entry) => {
                     const character = characterByPath.get(entry.characterPath);
@@ -4647,7 +4716,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
                   onSetConfirmed={(file) => void handleSetWorkspaceVisualSelection(selectedShotReferenceSlot, file)}
                   onTrash={(file) => void handleTrashFile(selectedShotReferenceSlot, file)}
                   onUpload={(files) => void handleUpload(selectedShotReferenceSlot, files)}
-                  slot={{ ...selectedShotReferenceSlot, label: "镜头专属参考图" }}
+                  slot={{ ...selectedShotReferenceSlot, label: "分镜专属参考图" }}
                 /></div> : null}
                 <WorkflowStepFooter disabled={busy} label="下一步：首帧" onClick={() => void advanceShotWorkflow()} />
               </section> : null}
@@ -4747,7 +4816,7 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
           <section aria-labelledby="asset-modal-title" aria-modal="true" className="modal-card asset-modal" role="dialog">
             <div className="modal-heading">
               <div>
-                <h2 id="asset-modal-title">{modal === "projectSettings" ? "项目设定" : modal === "character" ? "新建人物" : modal === "location" ? "新建场景" : modal === "prop" ? "新建道具" : modal === "look" ? "新建人物造型" : modal === "scene" ? "新建场次" : modal === "shot" ? "新建镜头" : modal === "import" ? "导入剧本" : modal === "rename" ? "重命名资产" : "移入回收站"}</h2>
+                <h2 id="asset-modal-title">{modal === "projectSettings" ? "项目设定" : modal === "character" ? "新建人物" : modal === "location" ? "新建场景" : modal === "prop" ? "新建道具" : modal === "look" ? "新建人物造型" : modal === "scene" ? "新建场次" : modal === "shot" ? "新建分镜" : modal === "import" ? "导入剧本" : modal === "rename" ? "重命名资产" : "移入回收站"}</h2>
               </div>
               <button aria-label="关闭" className="icon-button" onClick={() => setModal(null)} type="button">×</button>
             </div>
@@ -4775,26 +4844,26 @@ export function Workbench({ externalStructureTrigger = false }: { externalStruct
               <TextField label="场次编号" onChange={setNewSceneId} placeholder="例如：EP001-SC001" value={newSceneId} />
               <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !newSceneId.trim()} onClick={() => void handleCreateScene()} type="button">新建场次</button></div>
             </> : modal === "shot" ? <>
-              <div className="field-grid"><TextField label="场次" onChange={(sceneId) => {
+              <div className="field-grid"><SelectField ariaLabel="选择分镜所属场次" label="场次" disabled={busy || !sceneGroups.length} onChange={(sceneId) => {
                 setNewSceneId(sceneId);
                 setNewShotId(suggestNextShotId(sceneGroups.find((scene) => scene.sceneId === sceneId)?.shots || []));
-              }} value={newSceneId} /><TextField label="镜号" onChange={setNewShotId} value={newShotId} /></div>
-              <TextField label="镜头标题" onChange={setNewShotTitle} placeholder="例如：焦土尽头" value={newShotTitle} />
-              <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !newSceneId.trim() || !newShotId.trim() || !newShotTitle.trim()} onClick={() => void handleCreateShot()} type="button">新建镜头</button></div>
+              }} options={sceneGroups.map((scene) => ({ label: `${scene.sceneId} · ${scene.shots.length} 个分镜`, value: scene.sceneId }))} value={newSceneId} /><TextField label="分镜号" onChange={setNewShotId} value={newShotId} /></div>
+              <TextField label="分镜标题" onChange={setNewShotTitle} placeholder="例如：焦土尽头" value={newShotTitle} />
+              <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !newSceneId.trim() || !newShotId.trim() || !newShotTitle.trim()} onClick={() => void handleCreateShot()} type="button">新建分镜</button></div>
             </> : modal === "import" ? <>
               <div className="storyboard-import-layout">
                 <div className="import-source-list" aria-label="剧本来源">
                   <p className="eyebrow">选择剧本</p>
-                  {activeDraftGroups.map((group) => <button className={group.sourcePath === importSourcePath ? "is-active" : ""} key={group.sourcePath} onClick={() => chooseImportSource(group.sourcePath)} type="button"><span>{displayFileName(group.sourcePath)}</span><b>{group.shots.length} 镜头</b></button>)}
+                  {activeDraftGroups.map((group) => <button className={group.sourcePath === importSourcePath ? "is-active" : ""} key={group.sourcePath} onClick={() => chooseImportSource(group.sourcePath)} type="button"><span>{displayFileName(group.sourcePath)}</span><b>{group.shots.length} 个分镜</b></button>)}
                 </div>
                 <div className="import-shot-list">
                   {selectedImportGroup ? <>
-                    <div className="import-shot-list-heading"><div><p className="eyebrow">待新建镜头</p><h3>{displayFileName(selectedImportGroup.sourcePath)}</h3></div><label className="import-select-all"><input checked={selectedImportGroup.shots.length > 0 && selectedImportGroup.shots.every((shot) => importShotIds.includes(storyboardImportSelector(shot)))} onChange={toggleAllImportShots} type="checkbox" />全选</label></div>
+                    <div className="import-shot-list-heading"><div><p className="eyebrow">待新建分镜</p><h3>{displayFileName(selectedImportGroup.sourcePath)}</h3></div><label className="import-select-all"><input checked={selectedImportGroup.shots.length > 0 && selectedImportGroup.shots.every((shot) => importShotIds.includes(storyboardImportSelector(shot)))} onChange={toggleAllImportShots} type="checkbox" />全选</label></div>
                     <div className="import-shot-options">{selectedImportGroup.shots.map((shot) => { const selector = storyboardImportSelector(shot); return <label className="import-shot-option" key={selector}><input checked={importShotIds.includes(selector)} onChange={() => toggleImportShot(selector)} type="checkbox" /><span className="import-shot-id">{shot.design.shotId}</span><span className="import-shot-title">{displayShotTitle(shot)}</span><small>{shot.design.timecode || "未设时码"} · {shot.design.duration || "未设时长"}</small></label>; })}</div>
                   </> : <p className="import-empty">没有可导入的剧本草稿。</p>}
                 </div>
               </div>
-              <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !importSourcePath || !importShotIds.length} onClick={() => { if (importSourcePath) void handleImportStoryboard(importSourcePath, importShotIds); }} type="button">新建 {importShotIds.length} 个镜头</button></div>
+              <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !importSourcePath || !importShotIds.length} onClick={() => { if (importSourcePath) void handleImportStoryboard(importSourcePath, importShotIds); }} type="button">新建 {importShotIds.length} 个分镜</button></div>
             </> : modal === "rename" ? <>
               <TextField label="新名称" onChange={setRenameValue} value={renameValue} />
               <div className="modal-actions"><button className="text-button" onClick={() => setModal(null)} type="button">取消</button><button className="submit-button" disabled={busy || !renameValue.trim()} onClick={() => void handleRename()} type="button">确认重命名</button></div>

@@ -212,6 +212,73 @@ class PlannerSceneAssetBindingTest(unittest.TestCase):
 
 
 class PlannerPromptContractTest(unittest.TestCase):
+    def test_character_and_look_visual_prompts_are_structured_and_serialized(self) -> None:
+        plan = planner.normalize_plan({
+            "title": "人物视觉提示词",
+            "summary": "验证人物三视图和造型提示词。",
+            "new_characters": [{
+                "name": "提示词人物",
+                "role_category": "主角",
+                "identity": "边关少年",
+                "identity_baseline": "十四岁，短黑发，清瘦挺拔。",
+                "traits": ["左眉有细疤"],
+                "baseline_presentation": ["深色短衣"],
+                # Exercise a legacy/camel-case alias accepted by the planner.
+                "visualPrompt": "人物三视图，正面、左侧面、背面，全身站立，短黑发，清瘦挺拔。",
+                "negativePrompt": "文字，水印，重复人物",
+                "looks": [{
+                    "name": "雨夜装",
+                    "costume": "深灰短斗篷",
+                    "hair_makeup": "湿润短发",
+                    "visual_prompt": "人物造型参考图，深灰短斗篷，湿润短发，全身。",
+                    "negative_prompt": "文字，水印",
+                }],
+            }],
+            "look_additions": [],
+            "reuse_characters": [],
+            "new_locations": [],
+            "reuse_locations": [],
+            "new_props": [],
+            "reuse_props": [],
+            "new_scenes": [],
+            "reuse_scenes": [],
+            "notes": [],
+        }, {"characters": [], "locations": [], "props": [], "scenes": []})
+
+        character = plan["new_characters"][0]
+        look = character["looks"][0]
+        self.assertEqual(character["turnaround_prompt"], "人物三视图，正面、左侧面、背面，全身站立，短黑发，清瘦挺拔。")
+        self.assertEqual(character["negative_prompt"], "文字，水印，重复人物")
+        self.assertEqual(look["prompt"], "人物造型参考图，深灰短斗篷，湿润短发，全身。")
+        self.assertEqual(look["negative_prompt"], "文字，水印")
+
+        character_markdown = planner.character_document(character, "proposal_test")
+        look_markdown = planner.look_document(character, look, "proposal_test")
+        self.assertIn("## 三视图提示词", character_markdown)
+        self.assertIn(character["turnaround_prompt"], character_markdown)
+        self.assertIn("## 三视图负面提示词", character_markdown)
+        self.assertIn(character["negative_prompt"], character_markdown)
+        self.assertIn("## 三视图提示词", look_markdown)
+        self.assertIn(look["prompt"], look_markdown)
+        self.assertIn("## 三视图负面提示词", look_markdown)
+        self.assertIn(look["negative_prompt"], look_markdown)
+
+    def test_legacy_character_plan_gets_a_visual_fallback_instead_of_markdown(self) -> None:
+        character = planner.normalize_new_character({
+            "name": "旧计划人物",
+            "identity": "雷火馆少年弟子",
+            "identity_baseline": "十四五岁，身姿挺拔，眼神明亮沉稳。",
+            "traits": ["短发"],
+            "baseline_presentation": ["赤红馆服"],
+            "looks": [],
+        }, 1)
+
+        self.assertIn("人物三视图设定图", character["turnaround_prompt"])
+        self.assertIn("正面、左侧面、背面", character["turnaround_prompt"])
+        self.assertIn("身姿挺拔", character["turnaround_prompt"])
+        self.assertNotIn("## 身份基准", character["turnaround_prompt"])
+        self.assertEqual(character["negative_prompt"], "")
+
     def test_prompt_fields_survive_normalization_and_markdown_serialization(self) -> None:
         plan = planner.normalize_plan({
             "title": "提示词提案",

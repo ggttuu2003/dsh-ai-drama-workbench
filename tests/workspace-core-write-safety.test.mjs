@@ -55,26 +55,79 @@ test('shot discovery reads design.json without falling back to 镜头.md', async
   }
 })
 
-test('selecting an already-selected candidate repairs duplicate selections in the same slot', async () => {
+test('a v1 project cache upgrades known shot data into design.json once', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'dsh-ai-drama-shot-cache-upgrade-'))
+  const root = await realpath(temporary)
+  const shotPath = '分镜/EP001-SC001/SH001-缓存升级'
+  const shotDirectory = path.join(root, ...shotPath.split('/'))
+  const design = {
+    sceneId: 'EP001-SC001',
+    shotId: 'SH001',
+    title: '缓存升级',
+    timecode: '',
+    duration: '',
+    framing: '',
+    content: '由旧项目缓存升级。',
+    dialogue: '',
+    camera: '',
+    prompt: '',
+    negativePrompt: '',
+    firstFramePrompt: '',
+    firstFrameNegativePrompt: '',
+    lastFramePrompt: '',
+    lastFrameNegativePrompt: '',
+    references: '',
+    characterOverrides: [],
+    status: '待生成',
+  }
+
+  try {
+    await mkdir(path.join(root, '.workbench'), { recursive: true })
+    await mkdir(shotDirectory, { recursive: true })
+    await writeFile(path.join(shotDirectory, '镜头.md'), '# SH001 缓存升级\n', 'utf8')
+    await writeFile(path.join(root, '.workbench', 'project.json'), JSON.stringify({
+      schemaVersion: 1,
+      rootName: path.basename(root),
+      shots: [{ rootPath: shotPath, designPath: `${shotPath}/镜头.md`, design }],
+    }), 'utf8')
+
+    const snapshot = await withProjectRoot(root, () => getAssetWorkspaceSnapshot())
+    assert.equal(snapshot.shots.find(shot => shot.rootPath === shotPath)?.design.title, '缓存升级')
+    assert.equal(JSON.parse(await readFile(path.join(shotDirectory, 'design.json'), 'utf8')).title, '缓存升级')
+    assert.equal(JSON.parse(await readFile(path.join(root, '.workbench', 'project.json'), 'utf8')).schemaVersion, 3)
+  } finally {
+    await rm(temporary, { recursive: true, force: true })
+  }
+})
+
+test('character assets expose only the turnaround slot and keep legacy folders untouched', async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'dsh-ai-drama-selection-repair-'))
   const root = await realpath(temporary)
 
   try {
     const characterPath = await withProjectRoot(root, () => createCharacterAsset('选图修复人物'))
-    const referenceDirectory = path.join(root, '主要人物', '选图修复人物', '参考图')
+    const turnaroundDirectory = path.join(root, '主要人物', '选图修复人物', '三视图')
+    const legacyCostumeDirectory = path.join(root, '主要人物', '选图修复人物', '定妆')
+    const legacyReferenceDirectory = path.join(root, '主要人物', '选图修复人物', '参考图')
     await Promise.all([
-      writeFile(path.join(referenceDirectory, '01-已选.png'), IMAGE),
-      writeFile(path.join(referenceDirectory, '02-已选.png'), IMAGE),
-      writeFile(path.join(referenceDirectory, '03.png'), IMAGE),
+      mkdir(legacyCostumeDirectory, { recursive: true }),
+      mkdir(legacyReferenceDirectory, { recursive: true }),
+    ])
+    await Promise.all([
+      writeFile(path.join(turnaroundDirectory, '01-已选.png'), IMAGE),
+      writeFile(path.join(turnaroundDirectory, '02-已选.png'), IMAGE),
+      writeFile(path.join(turnaroundDirectory, '03.png'), IMAGE),
+      writeFile(path.join(legacyCostumeDirectory, '旧定妆.png'), IMAGE),
+      writeFile(path.join(legacyReferenceDirectory, '旧参考.png'), IMAGE),
     ])
 
     const selectedPath = await withProjectRoot(root, () => setCharacterVisualSelection(
       characterPath,
-      'reference',
+      'turnaround',
       '02-已选.png',
     ))
-    assert.equal(selectedPath, '主要人物/选图修复人物/参考图/02-已选.png')
-    assert.deepEqual((await readdir(referenceDirectory)).sort(), [
+    assert.equal(selectedPath, '主要人物/选图修复人物/三视图/02-已选.png')
+    assert.deepEqual((await readdir(turnaroundDirectory)).sort(), [
       '01.png',
       '02-已选.png',
       '03.png',
@@ -84,10 +137,10 @@ test('selecting an already-selected candidate repairs duplicate selections in th
     // temporary files or change the current disk-backed selection.
     await withProjectRoot(root, () => setCharacterVisualSelection(
       characterPath,
-      'reference',
+      'turnaround',
       '02-已选.png',
     ))
-    assert.deepEqual((await readdir(referenceDirectory)).sort(), [
+    assert.deepEqual((await readdir(turnaroundDirectory)).sort(), [
       '01.png',
       '02-已选.png',
       '03.png',
@@ -95,7 +148,10 @@ test('selecting an already-selected candidate repairs duplicate selections in th
 
     const snapshot = await withProjectRoot(root, () => getAssetWorkspaceSnapshot())
     const character = snapshot.characters.find(asset => asset.rootPath === characterPath)
-    assert.equal(character?.confirmedVisuals.reference?.name, '02-已选.png')
+    assert.deepEqual(character?.slots.map(slot => slot.key), ['turnaround'])
+    assert.equal(character?.confirmedVisuals.turnaround?.name, '02-已选.png')
+    assert.equal(await readdir(legacyCostumeDirectory).then(files => files[0]), '旧定妆.png')
+    assert.equal(await readdir(legacyReferenceDirectory).then(files => files[0]), '旧参考.png')
   } finally {
     await rm(temporary, { recursive: true, force: true })
   }
@@ -116,8 +172,7 @@ test('concurrent creation and shot renaming publish complete visible assets only
     const characterDirectory = path.join(root, '主要人物', '并发人物')
     assert.deepEqual((await readdir(characterDirectory)).sort(), [
       '三视图',
-      '参考图',
-      '定妆',
+      '角色设定.json',
       '角色设定.md',
     ].sort())
     assert.match(await readFile(path.join(characterDirectory, '角色设定.md'), 'utf8'), /角色分类/u)

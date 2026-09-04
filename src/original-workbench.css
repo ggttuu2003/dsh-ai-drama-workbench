@@ -1312,8 +1312,7 @@ summary:focus-visible {
   color: var(--text);
 }
 
-/* Confirmed character visuals stay together: the turnaround is primary, while
-   costume and reference selections remain visible as smaller supporting views. */
+/* Keep the single confirmed character turnaround visually prominent. */
 .character-visual-board {
   background: var(--surface);
   border: 1px solid var(--border);

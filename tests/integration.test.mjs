@@ -153,8 +153,13 @@ test('planner bridge stages, confirms, commits, and rejects stale or repeated pr
     const committed = await runBridge('apply', { proposal_id: proposalId, confirmation: `确认写入 ${proposalId}` }, stateDir)
     assert.equal(committed.code, 0)
     assert.equal(committed.body.result.status, 'applied')
-    assert.match(await readFile(path.join(project, '主要人物', '测试角色', '角色设定.md'), 'utf8'), /角色分类：\*\* 配角/)
-    assert.match(await readFile(path.join(project, '主要人物', '测试角色', '造型', 'LOOK-001-雨夜装', '造型设定.md'), 'utf8'), /LOOK-001/)
+    const characterDocument = await readFile(path.join(project, '主要人物', '测试角色', '角色设定.md'), 'utf8')
+    assert.match(characterDocument, /角色分类：\*\* 配角/)
+    assert.match(characterDocument, /## 三视图提示词/)
+    assert.match(characterDocument, /人物三视图设定图/)
+    const lookDocument = await readFile(path.join(project, '主要人物', '测试角色', '造型', 'LOOK-001-雨夜装', '造型设定.md'), 'utf8')
+    assert.match(lookDocument, /LOOK-001/)
+    assert.match(lookDocument, /## 三视图提示词/)
     assert.match(await readFile(path.join(project, '场景', '测试渡口', '场景设定.md'), 'utf8'), /cinematic foggy stone dock at night/)
     assert.match(await readFile(path.join(project, '道具', '测试铜哨', '道具设定.md'), 'utf8'), /weathered brass whistle on a plain background/)
     const shotMarkdown = await readFile(path.join(project, '分镜', 'EP001-SC001', 'SH001-雾中抵达', '镜头.md'), 'utf8')
@@ -186,6 +191,37 @@ test('planner bridge stages, confirms, commits, and rejects stale or repeated pr
     const staleApply = await runBridge('apply', { proposal_id: staleId, confirmation: `确认写入 ${staleId}` }, stateDir)
     assert.equal(staleApply.body.ok, false)
     assert.match(staleApply.body.error, /项目在提案后已变化/)
+  } finally {
+    await rm(temporary, { recursive: true, force: true })
+  }
+})
+
+test('planner bridge creates a user-requested asset plan in one call', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'dsh-ai-drama-create-'))
+  const project = path.join(temporary, 'project')
+  const stateDir = path.join(temporary, 'state')
+  await mkdir(project)
+
+  try {
+    const inspected = await runBridge('inspect', { project_path: project }, stateDir)
+    const created = await runBridge('create', {
+      project_path: project,
+      project_fingerprint: inspected.body.result.project_fingerprint,
+      novel_excerpt: '用户明确要求创建第一章资产。',
+      plan: fullPlan(),
+    }, stateDir)
+
+    assert.equal(created.code, 0)
+    assert.equal(created.body.ok, true)
+    assert.equal(created.body.result.status, 'applied')
+    assert.equal(created.body.result.summary.new_scenes[0].shot_count, 1)
+    assert.match(created.body.result.proposal_id, /^proposal_/)
+    assert.match(await readFile(path.join(project, '主要人物', '测试角色', '角色设定.md'), 'utf8'), /边关信使/)
+    assert.match(await readFile(path.join(project, '分镜', 'EP001-SC001', 'SH001-雾中抵达', 'design.json'), 'utf8'), /雾中抵达/)
+
+    const proposal = await runBridge('get', { proposal_id: created.body.result.proposal_id }, stateDir)
+    assert.equal(proposal.body.ok, false)
+    assert.match(proposal.body.error, /找不到该 proposalId/)
   } finally {
     await rm(temporary, { recursive: true, force: true })
   }

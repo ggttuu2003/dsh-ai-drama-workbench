@@ -7,13 +7,13 @@
 ## 已实现的工作流
 
 - 从受信任的资产库中选择一个一级项目；浏览器和 AI 只拿到项目 ID 与项目内相对路径，只读取真实文件夹、Markdown、图片和视频。
-- 展示 `主要人物/` 的身份基准、多个三视图 / 定妆 / 参考图候选，以及人物下的 `造型/LOOK-*`。
+- 展示 `主要人物/` 的身份基准三视图候选，以及人物下的 `造型/LOOK-*`。
 - 展示项目级 `场景/<地点>/` 的场景图与参考资料；`分镜/<场次>/` 只管理场次关系，`SH*` 镜头目录管理首尾帧、候选、定稿和成片。
 - 对图片执行“设为已选”：同一资料槽中，当前文件改名加 `-已选`，旧选中图恢复原文件名；不复制、不伪造图片。
 - 如果有人在 Finder 中手动把同一资料槽的多张图片改成 `-已选`，工作台会明确提示冲突；点击任意一张“统一选此图”会恢复其余候选名，只保留一张真实已选图。
 - 删除资产或资料后可在工作台右上角“回收站”查看并恢复；恢复只会回到原项目路径，若已有同名文件则拒绝覆盖。
-- Harness 内的 AI 可调用 `ai_drama_inspect`、`ai_drama_stage_proposal`、`ai_drama_get_proposal`、`ai_drama_apply_proposal`、`ai_drama_discard_proposal`。
-- AI 的拆解先暂存；只有用户输入精确的“确认写入 `<proposal_id>`”后，才会以可回滚事务创建真实目录和 Markdown。
+- Harness 内的 AI 可调用 `ai_drama_inspect`、`ai_drama_create_assets`、`ai_drama_stage_proposal`、`ai_drama_get_proposal`、`ai_drama_apply_proposal`、`ai_drama_discard_proposal`。
+- 用户明确要求创建／拆解资产时，AI 会先校验再以可回滚事务直接创建真实目录和 Markdown；只有用户明确要求预览方案时，才会使用暂存提案和确认写入流程。
 - 工作台中的人物、场景、道具和基础镜头图片默认是纯文生图：只读取当前已保存的 Markdown，不会因为资料槽存在 `-已选` 图片就自动上传。镜头首帧/尾帧另有明确的 FLUX.2 参考生图预设：可在生成窗口从镜头、场景、道具和项目人物图片中选择一到两张参考图。两张图分别进入独立的 `ReferenceLatent` 条件链，不会做图层或 latent 混合。视频工作流仍会按要求读取已选首帧和尾帧。任务通过本机服务安全提交到云端 Comfy Bridge；结果会自动格式化并归档到对应资料槽，绝不覆盖现有定稿。
 - 所有镜头视频完成后，在左侧“分镜制作 > 成片”检查顺序、选择候选视频并点击“合并成片”；总片写入项目根目录的 `成片/`，已有总片不会被默认覆盖。
 
@@ -56,9 +56,9 @@ ai-play-test/
 项目名就是书名对应的项目 ID，例如 `my-test`。小说拆解 Skill 会把它传给规划工具，避免误写当前选中的另一个项目：
 
 1. 点击左下角“工具”，再选择“问 AI”打开 Harness 原生对话。
-2. 提供书名/项目名和小说片段，要求 AI 使用 `ai_drama_inspect(project_id)` 扫描该项目，再使用同一项目的 `project_fingerprint` 调用 `ai_drama_stage_proposal`。
-3. 检查提案摘要和路径后，再让 AI 调用 `ai_drama_get_proposal(project_id, proposal_id)`。
-4. 只有确认无误时，在对话中明确输入 `确认写入 <proposal_id>`，再让 AI 调用 `ai_drama_apply_proposal(project_id, proposal_id, confirmation)`。
+2. 提供书名/项目名和小说片段，并明确要求“创建资产”或“建立首章”。AI 使用 `ai_drama_inspect(project_id)` 扫描该项目，再用同一 `project_fingerprint` 调用 `ai_drama_create_assets`，将人物、场景、道具、场次与镜头设计直接写入项目。
+3. 如需先审阅而不写入，明确说“先预览方案”。AI 才会调用 `ai_drama_stage_proposal`，展示提案摘要和路径。
+4. 预览后的写入仍需要在对话中明确输入 `确认写入 <proposal_id>`，再让 AI 调用 `ai_drama_apply_proposal(project_id, proposal_id, confirmation)`。
 
 该流程会生成真实的角色、造型、场景、道具、场次、镜头 Markdown 和标准资料槽；不会伪造图片或视频。Skill 文件位于 `skills/novel-to-drama-assets/`，安装到 Codex 后也可直接复用。
 
@@ -119,7 +119,6 @@ Bridge 默认只监听服务器回环地址。建议使用 HTTPS 反向代理、
       "maxConcurrentJobs": 1,
       "workflowMap": {
         "character-turnaround-v1": "image-generate",
-        "character-costume-v1": "image-generate",
         "scene-image-v1": "image-generate",
         "prop-image-v1": "image-generate",
         "shot-image-v1": "image-generate",
@@ -149,7 +148,7 @@ Bridge 默认只监听服务器回环地址。建议使用 HTTPS 反向代理、
 2. 在镜头的“画面参考”点击“生成场景图”，会创建或复用项目级 `场景/<场次名>/`，自动关联当前场次，并把结果归档到该场景资产的 `场景图/`。弹窗支持文生图或参考生图；参考生图可从当前镜头可用的场景、道具和项目人物图片中选择参考。
 3. 生成参考生图首帧或尾帧时，可选择最多两张镜头、场景、道具或项目人物图片（例如人物 + 场景）；不选参考图时使用文生图。尾帧不要求绑定首帧，首帧只是可选参考图之一。
 4. H3 首尾帧视频需要在镜头的首帧和尾帧资料槽中各设一张为 `-已选`。选中资产后点击右上“生成”，选择服务器与固定预设，再点击“生成视频”。
-5. 人物三视图/定妆、场景图、道具参考图、镜头候选、首帧、尾帧和 H3 视频都会进入各自资料槽；图片任务的提示词可在生成弹窗中直接修改，不会自动标为已选或覆盖定稿。
+5. 人物只生成三视图；场景图、道具参考图、镜头候选、首帧、尾帧和 H3 视频都会进入各自资料槽；图片任务的提示词可在生成弹窗中直接修改，不会自动标为已选或覆盖定稿。
 
 图片任务的生成弹窗会显示当前工作流实际支持的提示词参数，可在提交前临时修改；修改只影响本次任务，不回写人物、场景、道具或镜头 Markdown。FLUX.2 参考生图不支持独立负面提示词，因此不会显示或提交该字段；图生视频仍只读取已保存的镜头资料。
 

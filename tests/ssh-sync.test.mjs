@@ -7,6 +7,7 @@ import test from 'node:test'
 import {
   BRIDGE_SYNC_REMOTE_DIR,
   getBridgeSyncManifest,
+  mergeSshConfig,
   missingBridgeWorkflowIds,
   normalizeSshConfig,
 } from '../src/index.js'
@@ -15,7 +16,7 @@ test('Bridge sync uses a fixed safe manifest and discovers every local workflow 
   const manifest = await getBridgeSyncManifest()
 
   assert.equal(BRIDGE_SYNC_REMOTE_DIR, '/root/comfy-bridge')
-  assert.deepEqual(manifest.workflowIds, ['image-generate', 'image-to-image', 'video-first-last'])
+  assert.deepEqual(manifest.workflowIds, ['image-generate', 'image-generate-qwen', 'image-to-image', 'video-first-last'])
   assert.ok(manifest.files.includes('bridge.py'))
   assert.ok(manifest.files.includes('run.sh'))
   assert.ok(manifest.files.includes('workflows/image-to-image.json'))
@@ -57,7 +58,7 @@ test('Bridge workflow verification reports only missing local workflow ids', () 
   assert.throws(() => missingBridgeWorkflowIds({}, expected), /Bridge 返回格式无效/u)
 })
 
-test('SSH normalization never persists the transient password or remote sync paths', () => {
+test('SSH normalization persists the local password but rejects unrelated remote paths', () => {
   const config = normalizeSshConfig({
     name: '测试服务器',
     host: 'example.com',
@@ -66,12 +67,16 @@ test('SSH normalization never persists the transient password or remote sync pat
     localPort: 18787,
     remoteHost: '127.0.0.1',
     remotePort: 8787,
-    password: 'never-store-this',
+    password: 'store-locally',
     remoteDirectory: '/tmp/injected',
   })
 
   assert.equal(config.host, 'example.com')
   assert.equal(config.localPort, 18787)
-  assert.equal('password' in config, false)
+  assert.equal(config.password, 'store-locally')
   assert.equal('remoteDirectory' in config, false)
+
+  assert.equal(mergeSshConfig(config, { host: 'new.example.com' }).password, 'store-locally')
+  assert.equal(mergeSshConfig(config, { password: '' }).password, 'store-locally')
+  assert.equal(mergeSshConfig(config, { password: 'replacement' }).password, 'replacement')
 })

@@ -32,6 +32,8 @@ def main() -> int:
             result: dict[str, Any] = {"ok": True, **planner.scan_project(root)}
         elif operation == "stage":
             result = planner.stage_proposal(params)
+        elif operation == "create":
+            result = planner.create_assets(params)
         elif operation == "get":
             result = planner.get_proposal(params)
         elif operation == "apply":
